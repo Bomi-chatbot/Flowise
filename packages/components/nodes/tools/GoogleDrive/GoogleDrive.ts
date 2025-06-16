@@ -591,7 +591,7 @@ class GoogleDrive_Tools implements INode {
                 name: 'accessToken',
                 type: 'string',
                 description: 'You can override the access token per request using overrideConfig.vars.access_token in the API call. This allows multiple users to use their own Google Drive access tokens.',
-                placeholder: 'Use overrideConfig: { vars: { access_token: "your_token_here" } }',
+                placeholder: 'Use overrideConfig: { access_token: "your_token_here" }',
                 optional: true,
                 additionalParams: true,
                 hideCodeExecute: true
@@ -601,8 +601,7 @@ class GoogleDrive_Tools implements INode {
 
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         let accessToken: string;
-        const overrideAccessToken = nodeData.inputs?.vars?.accessToken;
-        
+        const overrideAccessToken = nodeData.inputs?.accessToken;
         if (overrideAccessToken) {
             accessToken = overrideAccessToken;
         } else {
