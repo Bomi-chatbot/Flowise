@@ -601,7 +601,7 @@ class GoogleDrive_Tools implements INode {
 
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         let accessToken: string;
-        const overrideAccessToken = nodeData.inputs?.accessToken;
+        const overrideAccessToken = nodeData.inputs?.vars?.accessToken || nodeData.inputs?.accessToken;
         if (overrideAccessToken) {
             accessToken = overrideAccessToken;
         } else {
@@ -646,6 +646,9 @@ class GoogleDrive_Tools implements INode {
     transformNodeInputsToToolArgs(nodeData: INodeData): Record<string, any> {
         // Collect default parameters from inputs
         const defaultParams: Record<string, any> = {}
+
+        // Acess token
+        if (nodeData.inputs?.accessToken) defaultParams.accessToken = nodeData.inputs.accessToken
 
         // Add parameters based on the inputs provided
         if (nodeData.inputs?.fileId) defaultParams.fileId = nodeData.inputs.fileId
