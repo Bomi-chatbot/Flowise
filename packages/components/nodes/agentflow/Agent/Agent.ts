@@ -492,7 +492,8 @@ class Agent_Agentflow implements INode {
                     credential: toolConfig['FLOWISE_CREDENTIAL_ID'],
                     inputs: {
                         ...nodeData.inputs,
-                        ...toolConfig
+                        ...toolConfig,
+                        ...(nodeData.inputs?.vars || {})
                     }
                 }
                 const toolInstance = await newToolNodeInstance.init(newNodeData, '', options)

@@ -590,8 +590,9 @@ class GoogleDrive_Tools implements INode {
                 label: 'Access Token Override',
                 name: 'accessToken',
                 type: 'string',
-                description: 'You can override the access token per request using overrideConfig.vars.access_token in the API call. This allows multiple users to use their own Google Drive access tokens.',
-                placeholder: 'Use overrideConfig: { access_token: "your_token_here" }',
+                description:
+                    'You can override the access token per request using overrideConfig.vars.access_token in the API call. This allows multiple users to use their own Google Drive access tokens.',
+                placeholder: 'access token value',
                 optional: true,
                 additionalParams: true,
                 hideCodeExecute: true
@@ -600,10 +601,10 @@ class GoogleDrive_Tools implements INode {
     }
 
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
-        let accessToken: string;
-        const overrideAccessToken = nodeData.inputs?.vars?.accessToken || nodeData.inputs?.accessToken;
+        let accessToken: string
+        const overrideAccessToken = nodeData.inputs?.vars?.access_token || nodeData.inputs?.access_token
         if (overrideAccessToken) {
-            accessToken = overrideAccessToken;
+            accessToken = overrideAccessToken
         } else {
             let credentialData = await getCredentialData(nodeData.credential ?? '', options)
             credentialData = await refreshOAuth2Token(nodeData.credential ?? '', credentialData, options)
@@ -613,7 +614,7 @@ class GoogleDrive_Tools implements INode {
         if (!accessToken) {
             throw new Error('No access token found in credential')
         }
-        
+
         const driveType = nodeData.inputs?.driveType as string
         const fileActions = convertMultiOptionsToStringArray(nodeData.inputs?.fileActions)
         const folderActions = convertMultiOptionsToStringArray(nodeData.inputs?.folderActions)

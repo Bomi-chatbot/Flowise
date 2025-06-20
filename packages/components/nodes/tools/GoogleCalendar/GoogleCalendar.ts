@@ -538,8 +538,9 @@ class GoogleCalendar_Tools implements INode {
                 label: 'Access Token Override',
                 name: 'accessToken',
                 type: 'string',
-                description: 'You can override the access token per request using overrideConfig.vars.access_token in the API call. This allows multiple users to use their own Google Calendar access tokens.',
-                placeholder: 'Use overrideConfig: { accessToken: "your_token_here" }',
+                description:
+                    'You can override the access token per request using overrideConfig.vars.access_token in the API call. This allows multiple users to use their own Google Calendar access tokens.',
+                placeholder: 'access token value',
                 optional: true,
                 additionalParams: true
             }
@@ -548,10 +549,10 @@ class GoogleCalendar_Tools implements INode {
 
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         const calendarType = nodeData.inputs?.calendarType as string
-        let accessToken: string;
-        const overrideAccessToken = nodeData.inputs?.vars?.accessToken || nodeData.inputs?.accessToken;
+        let accessToken: string
+        const overrideAccessToken = nodeData.inputs?.vars?.access_token || nodeData.inputs?.access_token
         if (overrideAccessToken) {
-            accessToken = overrideAccessToken;
+            accessToken = overrideAccessToken
         } else {
             let credentialData = await getCredentialData(nodeData.credential ?? '', options)
             credentialData = await refreshOAuth2Token(nodeData.credential ?? '', credentialData, options)
