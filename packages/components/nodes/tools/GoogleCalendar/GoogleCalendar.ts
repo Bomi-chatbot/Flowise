@@ -550,7 +550,7 @@ class GoogleCalendar_Tools implements INode {
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         const calendarType = nodeData.inputs?.calendarType as string
         let accessToken: string
-        const overrideAccessToken = nodeData.inputs?.vars?.access_token || nodeData.inputs?.access_token
+        const overrideAccessToken = nodeData.inputs?.vars?.access_token || nodeData.inputs?.access_token || nodeData.inputs?.accessToken
         if (overrideAccessToken) {
             accessToken = overrideAccessToken
         } else {
@@ -575,11 +575,12 @@ class GoogleCalendar_Tools implements INode {
         }
 
         const defaultParams = this.transformNodeInputsToToolArgs(nodeData)
-
+        const sessionId = options?.sessionId || options?.chatId || 'default'
         const tools = createGoogleCalendarTools({
             accessToken,
             actions,
-            defaultParams
+            defaultParams,
+            sessionId
         })
 
         return tools

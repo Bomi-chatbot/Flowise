@@ -4,6 +4,7 @@ import { DynamicStructuredTool } from '../OpenAPIToolkit/core'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
 
 export const desc = `Use this when you want to access Google Calendar API for managing events and calendars`
+const timezoneCache = new Map<string, Map<string, string>>()
 
 export interface Headers {
     [key: string]: string
@@ -22,6 +23,7 @@ export interface RequestParameters {
     actions?: string[]
     accessToken?: string
     defaultParams?: any
+    sessionId?: string
 }
 
 // Define schemas for different Google Calendar operations
@@ -129,10 +131,42 @@ const QueryFreebusySchema = z.object({
 
 class BaseGoogleCalendarTool extends DynamicStructuredTool {
     protected accessToken: string = ''
+    protected sessionId: string = ''
 
     constructor(args: any) {
         super(args)
         this.accessToken = args.accessToken ?? ''
+        this.sessionId = args.sessionId ?? 'default'
+    }
+
+    /**
+     * Get the timezone for a specific calendar, with caching per session
+     * @param calendarId - The calendar ID (defaults to 'primary')
+     * @returns Promise<string> - The timezone string (e.g., 'Europe/Madrid')
+     */
+    async getCalendarTimezone(calendarId: string = 'primary'): Promise<string> {
+        if (!timezoneCache.has(this.sessionId)) {
+            timezoneCache.set(this.sessionId, new Map())
+        }
+
+        const sessionCache = timezoneCache.get(this.sessionId)!
+        if (sessionCache.has(calendarId)) {
+            return sessionCache.get(calendarId)!
+        }
+
+        try {
+            const endpoint = `calendars/${encodeURIComponent(calendarId)}`
+            const response = await this.makeGoogleCalendarRequest({ endpoint })
+            const responseData = response.split(TOOL_ARGS_PREFIX)[0] // Remove tool args suffix
+            const calendarData = JSON.parse(responseData)
+            const timezone = calendarData.timeZone || 'UTC'
+            sessionCache.set(calendarId, timezone)
+            return timezone
+        } catch (error) {
+            console.warn(`Failed to get calendar timezone for ${calendarId} in session ${this.sessionId}:`, error)
+            sessionCache.set(calendarId, 'UTC')
+            return 'UTC'
+        }
     }
 
     async makeGoogleCalendarRequest({
@@ -227,7 +261,8 @@ class CreateEventTool extends BaseGoogleCalendarTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            sessionId: args.sessionId
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -249,14 +284,14 @@ class CreateEventTool extends BaseGoogleCalendarTool {
                 eventData.start = { date: params.startDate }
                 eventData.end = { date: params.endDate }
             } else if (params.startDateTime && params.endDateTime) {
-                // Timed event
+                const timezone = params.timeZone || (await this.getCalendarTimezone(params.calendarId))
                 eventData.start = {
                     dateTime: params.startDateTime,
-                    timeZone: params.timeZone || 'UTC'
+                    timeZone: timezone
                 }
                 eventData.end = {
                     dateTime: params.endDateTime,
-                    timeZone: params.timeZone || 'UTC'
+                    timeZone: timezone
                 }
             }
 
@@ -342,7 +377,8 @@ class UpdateEventTool extends BaseGoogleCalendarTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            sessionId: args.sessionId
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -362,13 +398,14 @@ class UpdateEventTool extends BaseGoogleCalendarTool {
                 updateData.start = { date: params.startDate }
                 updateData.end = { date: params.endDate }
             } else if (params.startDateTime && params.endDateTime) {
+                const timezone = params.timeZone || (await this.getCalendarTimezone(params.calendarId))
                 updateData.start = {
                     dateTime: params.startDateTime,
-                    timeZone: params.timeZone || 'UTC'
+                    timeZone: timezone
                 }
                 updateData.end = {
                     dateTime: params.endDateTime,
-                    timeZone: params.timeZone || 'UTC'
+                    timeZone: timezone
                 }
             }
 
@@ -739,6 +776,7 @@ export const createGoogleCalendarTools = (args?: RequestParameters): DynamicStru
     const actions = args?.actions || []
     const accessToken = args?.accessToken || ''
     const defaultParams = args?.defaultParams || {}
+    const sessionId = args?.sessionId || 'default'
 
     // Event tools
     if (actions.includes('listEvents')) {
@@ -754,6 +792,7 @@ export const createGoogleCalendarTools = (args?: RequestParameters): DynamicStru
         tools.push(
             new CreateEventTool({
                 accessToken,
+                sessionId,
                 defaultParams: defaultParams.createEvent
             })
         )
@@ -772,6 +811,7 @@ export const createGoogleCalendarTools = (args?: RequestParameters): DynamicStru
         tools.push(
             new UpdateEventTool({
                 accessToken,
+                sessionId,
                 defaultParams: defaultParams.updateEvent
             })
         )
