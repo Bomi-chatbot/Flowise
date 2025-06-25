@@ -37,11 +37,11 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
 
         try {
             this.clearExpiredCache()
-            if (!params.fileId && !params.fileName) {
+            if (!params.fileId && !params.fileName && !params.folderName && !params.folderId) {
                 const result = {
                     success: false,
                     error: 'MISSING_REQUIRED_PARAMS',
-                    message: 'Either fileId or fileName is required'
+                    message: 'Either fileId, fileName, folderId, or folderName is required'
                 }
 
                 return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
@@ -61,7 +61,20 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                     }
                     return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
                 }
-            } else {
+            } else if (params.folderId) {
+                const folder = await this.getFileById(params.folderId)
+                if (folder) {
+                    files = [folder]
+                } else {
+                    const result = {
+                        success: false,
+                        error: 'FOLDER_NOT_FOUND',
+                        folderId: params.folderId,
+                        message: `Folder with ID "${params.folderId}" not found`
+                    }
+                    return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+                }
+            } else if (params.fileName) {
                 files = await this.searchFilesByName(params)
                 if (files.length === 0) {
                     const result = {
@@ -75,6 +88,22 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                             exactMatch: params.exactMatch
                         },
                         message: `No files found matching "${params.fileName}"`
+                    }
+
+                    return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+                }
+            } else if (params.folderName) {
+                files = await this.searchFoldersByName(params)
+                if (files.length === 0) {
+                    const result = {
+                        success: false,
+                        error: 'FOLDER_NOT_FOUND',
+                        folderName: params.folderName,
+                        searchCriteria: {
+                            folderPath: params.folderPath,
+                            exactMatch: params.exactMatch
+                        },
+                        message: `No folders found matching "${params.folderName}"`
                     }
 
                     return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
@@ -177,6 +206,41 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
         }
     }
 
+    private async searchFoldersByName(params: any): Promise<any[]> {
+        try {
+            let searchQuery = ''
+            let folderConstraint = ''
+            if (params.folderPath) {
+                const parentFolderId = await this.resolveFolderPath(params.folderPath)
+                if (parentFolderId) {
+                    folderConstraint = ` and '${parentFolderId}' in parents`
+                }
+            }
+
+            if (params.exactMatch) {
+                searchQuery = `name='${params.folderName}' and mimeType='application/vnd.google-apps.folder'${folderConstraint}`
+            } else {
+                searchQuery = `name contains '${params.folderName}' and mimeType='application/vnd.google-apps.folder'${folderConstraint}`
+            }
+
+            const queryParams = new URLSearchParams()
+            queryParams.append('q', searchQuery)
+            queryParams.append('pageSize', params.maxResults.toString())
+            queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink,webContentLink,parents)')
+            queryParams.append('orderBy', 'modifiedTime desc')
+            const response = await this.makeGoogleDriveRequest({
+                endpoint: `files?${queryParams.toString()}`,
+                params: {}
+            })
+
+            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
+            return responseData.files || []
+        } catch (error) {
+            console.error('Error searching folders by name:', error)
+            return []
+        }
+    }
+
     private async resolveFolderId(params: any): Promise<string | null> {
         try {
             if (params.folderId) {
@@ -269,9 +333,14 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
 
     private async generateFileUrls(file: any, urlType: string): Promise<any> {
         try {
-            const urls: any = {
-                view: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
-                download: file.webContentLink || `https://drive.google.com/uc?id=${file.id}&export=download`
+            const isFolder = file.mimeType === 'application/vnd.google-apps.folder'
+            const urls: any = {}
+            if (isFolder) {
+                urls.view = file.webViewLink || `https://drive.google.com/drive/folders/${file.id}`
+                urls.download = null // Folders can't be downloaded directly
+            } else {
+                urls.view = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`
+                urls.download = file.webContentLink || `https://drive.google.com/uc?id=${file.id}&export=download`
             }
 
             if (urlType === 'share' || urlType === 'all') {
@@ -279,7 +348,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                     const shareUrl = await this.getOrCreateShareUrl(file.id)
                     urls.share = shareUrl
                 } catch (error) {
-                    console.warn(`Could not generate share URL for file ${file.id}:`, error)
+                    console.warn(`Could not generate share URL for ${isFolder ? 'folder' : 'file'} ${file.id}:`, error)
                     urls.share = urls.view
                 }
             }
@@ -288,6 +357,12 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                 case 'view':
                     return { view: urls.view }
                 case 'download':
+                    if (isFolder) {
+                        return {
+                            download: null,
+                            message: 'Folders cannot be downloaded directly. Use view or share URL instead.'
+                        }
+                    }
                     return { download: urls.download }
                 case 'share':
                     return { share: urls.share }
@@ -295,17 +370,28 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                     return urls
             }
         } catch (error) {
-            console.error('Error generating file URLs:', error)
-            return {
-                view: `https://drive.google.com/file/d/${file.id}/view`,
-                download: `https://drive.google.com/uc?id=${file.id}&export=download`,
-                error: 'Could not generate all URLs'
+            console.error('Error generating URLs:', error)
+            const isFolder = file.mimeType === 'application/vnd.google-apps.folder'
+            if (isFolder) {
+                return {
+                    view: `https://drive.google.com/drive/folders/${file.id}`,
+                    download: null,
+                    error: 'Could not generate all URLs'
+                }
+            } else {
+                return {
+                    view: `https://drive.google.com/file/d/${file.id}/view`,
+                    download: `https://drive.google.com/uc?id=${file.id}&export=download`,
+                    error: 'Could not generate all URLs'
+                }
             }
         }
     }
 
     private async getOrCreateShareUrl(fileId: string): Promise<string> {
         try {
+            const fileInfo = await this.getFileById(fileId)
+            const isFolder = fileInfo?.mimeType === 'application/vnd.google-apps.folder'
             const permissionsResponse = await this.makeGoogleDriveRequest({
                 endpoint: `files/${encodeURIComponent(fileId)}/permissions`,
                 params: {}
@@ -314,8 +400,12 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
             const permissionsData = JSON.parse(permissionsResponse.split(TOOL_ARGS_PREFIX)[0])
             const publicPermission = permissionsData.permissions?.find((p: any) => p.type === 'anyone')
 
+            const baseUrl = isFolder
+                ? `https://drive.google.com/drive/folders/${fileId}?usp=sharing`
+                : `https://drive.google.com/file/d/${fileId}/view?usp=sharing`
+
             if (publicPermission) {
-                return `https://drive.google.com/file/d/${fileId}/view?usp=sharing`
+                return baseUrl
             }
 
             const permissionData = {
@@ -330,9 +420,10 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                 params: {}
             })
 
-            return `https://drive.google.com/file/d/${fileId}/view?usp=sharing`
+            return baseUrl
         } catch (error) {
             console.warn('Could not create share permission:', error)
+            // Fallback - try to determine if it's a folder from the fileId pattern or default to file
             return `https://drive.google.com/file/d/${fileId}/view`
         }
     }

@@ -34,6 +34,7 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
     protected accessToken: string = ''
     defaultParams: any
     private twilioCredentials: TwilioAuthConfig | null = null
+    requiresHumanInput?: boolean
 
     constructor(args: any) {
         const toolInput = {
@@ -88,42 +89,44 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
                     targetFolderId = await this.findFolderByName(params.targetFolderName)
                 }
 
-                // If folder is not found, try to create it
+                // If folder is not found, check if we need confirmation
                 if (!targetFolderId) {
-                    if (params.userConfirmedFolderCreation || !params.requireConfirmationToCreateFolder) {
-                        if (params.folderPath) {
-                            targetFolderId = await this.createFolderPath(params.folderPath)
-                        } else if (params.targetFolderName) {
-                            targetFolderId = await this.createFolderIfNotExists(params.targetFolderName)
-                        }
-
-                        if (!targetFolderId) {
-                            const result = {
-                                success: false,
-                                targetFolder: params.targetFolderName || params.folderPath,
-                                error: 'FOLDER_NOT_FOUND_AND_CREATION_FAILED',
-                                message: `Could not find or create folder: ${params.targetFolderName || params.folderPath}`
-                            }
-
-                            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
-                        }
-                    } else {
+                    if (params.requireConfirmationToCreateFolder && !params.userConfirmedFolderCreation) {
+                        this.requiresHumanInput = true
                         const folderToCreate = params.targetFolderName || params.folderPath
                         const result = {
                             success: false,
                             error: 'FOLDER_NOT_FOUND_REQUIRES_CONFIRMATION',
                             targetFolder: folderToCreate,
-                            message: `Folder "${folderToCreate}" not found. Do you want me to create it?`,
-                            suggestedAction: 'create_folder',
+                            message: `Folder "${folderToCreate}" not found. Would you like me to create it before uploading the file?`,
                             requiresUserConfirmation: true,
                             confirmationPrompt: `The folder "${folderToCreate}" does not exist. Would you like me to create it before uploading the file?`,
-                            humanInputAction: {
-                                type: 'folder_creation_confirmation',
-                                folderName: folderToCreate,
-                                fileUrl: params.fileUrl,
-                                fileName: params.fileName
+                            nextAction: {
+                                tool: 'url_file_uploader',
+                                params: {
+                                    ...params,
+                                    userConfirmedFolderCreation: true
+                                }
                             }
                         }
+
+                        return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+                    }
+
+                    if (params.folderPath) {
+                        targetFolderId = await this.createFolderPath(params.folderPath)
+                    } else if (params.targetFolderName) {
+                        targetFolderId = await this.createFolderIfNotExists(params.targetFolderName)
+                    }
+
+                    if (!targetFolderId) {
+                        const result = {
+                            success: false,
+                            targetFolder: params.targetFolderName || params.folderPath,
+                            error: 'FOLDER_NOT_FOUND_AND_CREATION_FAILED',
+                            message: `Could not find or create folder: ${params.targetFolderName || params.folderPath}`
+                        }
+
                         return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
                     }
                 }
@@ -164,7 +167,7 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
                 mimeType: mimeType,
                 targetFolderId: targetFolderId,
                 webViewLink: uploadResult.webViewLink,
-                downloadUrl: params.fileUrl
+                downloadUrl: `https://drive.google.com/uc?id=${uploadResult.id}&export=download`
             }
 
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
@@ -176,6 +179,7 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
                 url: params.fileUrl,
                 timestamp: new Date().toISOString()
             }
+
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
         }
     }

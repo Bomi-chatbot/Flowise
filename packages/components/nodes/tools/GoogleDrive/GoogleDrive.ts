@@ -180,6 +180,14 @@ class GoogleDrive_Tools implements INode {
                     {
                         label: 'URL File Uploader',
                         name: 'urlFileUploader'
+                    },
+                    {
+                        label: 'Smart Folder Creator',
+                        name: 'smartFolderCreator'
+                    },
+                    {
+                        label: 'Smart File URL Generator',
+                        name: 'smartFileUrl'
                     }
                 ],
                 show: {
@@ -717,7 +725,92 @@ class GoogleDrive_Tools implements INode {
                 type: 'string',
                 description: 'Hierarchical folder path (e.g., "Projects/2024/Client1")',
                 show: {
-                    smartActions: ['urlFileUploader']
+                    smartActions: ['urlFileUploader', 'smartFolderCreator']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            // Smart Folder Creator Parameters
+            {
+                label: 'Parent Folder Name',
+                name: 'parentFolderName',
+                type: 'string',
+                description: 'Name of the parent folder for folder creation',
+                show: {
+                    smartActions: ['smartFolderCreator']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Create Parent Path',
+                name: 'createParentPath',
+                type: 'boolean',
+                description: 'Create parent folders if they do not exist',
+                default: true,
+                show: {
+                    smartActions: ['smartFolderCreator']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            // Smart File URL Parameters
+            {
+                label: 'File Name or ID',
+                name: 'fileNameOrId',
+                type: 'string',
+                description: 'File name or Google Drive file ID',
+                show: {
+                    smartActions: ['smartFileUrl']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'URL Type',
+                name: 'urlType',
+                type: 'options',
+                description: 'Type of URL to generate',
+                options: [
+                    {
+                        label: 'View URL',
+                        name: 'view'
+                    },
+                    {
+                        label: 'Download URL',
+                        name: 'download'
+                    },
+                    {
+                        label: 'Share URL',
+                        name: 'share'
+                    }
+                ],
+                default: 'view',
+                show: {
+                    smartActions: ['smartFileUrl']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Search in Folder',
+                name: 'searchInFolder',
+                type: 'string',
+                description: 'Folder name or ID to search within (optional)',
+                show: {
+                    smartActions: ['smartFileUrl']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Exact Match',
+                name: 'exactMatch',
+                type: 'boolean',
+                description: 'Whether to perform exact or partial name matching (default: partial)',
+                default: false,
+                show: {
+                    smartActions: ['smartFileUrl']
                 },
                 additionalParams: true,
                 optional: true
@@ -837,6 +930,23 @@ class GoogleDrive_Tools implements INode {
         if (nodeData.inputs?.fileUrl) defaultParams.fileUrl = nodeData.inputs.fileUrl
         if (nodeData.inputs?.targetFolderName) defaultParams.targetFolderName = nodeData.inputs.targetFolderName
         if (nodeData.inputs?.folderPath) defaultParams.folderPath = nodeData.inputs.folderPath
+
+        // Smart Folder Creator parameters
+        if (nodeData.inputs?.parentFolderName) defaultParams.parentFolderName = nodeData.inputs.parentFolderName
+        if (nodeData.inputs?.createParentPath) defaultParams.createParentPath = nodeData.inputs.createParentPath
+
+        // Smart File URL parameters
+        if (nodeData.inputs?.fileNameOrId) {
+            const value = nodeData.inputs.fileNameOrId
+            if (value.match(/^[a-zA-Z0-9_-]{25,}$/)) {
+                defaultParams.fileId = value
+            } else {
+                defaultParams.fileName = value
+            }
+        }
+        if (nodeData.inputs?.urlType) defaultParams.urlType = nodeData.inputs.urlType
+        if (nodeData.inputs?.searchInFolder) defaultParams.folderName = nodeData.inputs.searchInFolder
+        if (nodeData.inputs?.exactMatch) defaultParams.exactMatch = nodeData.inputs.exactMatch
 
         if (nodeData.inputs?.twilioAccountSid && nodeData.inputs?.twilioAuthToken) {
             defaultParams.twilioAuth = {
