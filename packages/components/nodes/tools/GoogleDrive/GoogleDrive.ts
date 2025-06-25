@@ -24,7 +24,7 @@ class GoogleDrive_Tools implements INode {
         this.description = 'Perform Google Drive operations such as managing files, folders, sharing, and searching'
         this.baseClasses = ['Tool']
         this.credential = {
-            label: 'Connect Credential',
+            label: 'Google Drive Credential',
             name: 'credential',
             type: 'credential',
             credentialNames: ['googleDriveOAuth2']
@@ -51,6 +51,10 @@ class GoogleDrive_Tools implements INode {
                     {
                         label: 'Share',
                         name: 'share'
+                    },
+                    {
+                        label: 'Smart Tools',
+                        name: 'smart'
                     }
                 ]
             },
@@ -156,6 +160,30 @@ class GoogleDrive_Tools implements INode {
                 ],
                 show: {
                     driveType: ['share']
+                }
+            },
+            // Smart Tools Actions
+            {
+                label: 'Smart Actions',
+                name: 'smartActions',
+                type: 'multiOptions',
+                description: 'Intelligent Google Drive operations',
+                options: [
+                    {
+                        label: 'Smart Folder Finder',
+                        name: 'smartFolderFinder'
+                    },
+                    {
+                        label: 'Hierarchical Folder Navigator',
+                        name: 'hierarchicalFolderNavigator'
+                    },
+                    {
+                        label: 'URL File Uploader',
+                        name: 'urlFileUploader'
+                    }
+                ],
+                show: {
+                    driveType: ['smart']
                 }
             },
             // File Parameters
@@ -596,13 +624,110 @@ class GoogleDrive_Tools implements INode {
                 optional: true,
                 additionalParams: true,
                 hideCodeExecute: true
+            },
+            {
+                label: 'Folder Name',
+                name: 'folderName',
+                type: 'string',
+                description: 'Name of the folder to search for',
+                show: {
+                    smartActions: ['smartFolderFinder']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Exact Match',
+                name: 'exactMatch',
+                type: 'boolean',
+                description: 'Whether to perform exact or partial folder name matching',
+                default: false,
+                show: {
+                    smartActions: ['smartFolderFinder']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Navigation Operation',
+                name: 'navigationOperation',
+                type: 'options',
+                description: 'Type of hierarchical navigation operation',
+                options: [
+                    {
+                        label: 'List Root Folders',
+                        name: 'listRoot'
+                    },
+                    {
+                        label: 'List Subfolders',
+                        name: 'listSubfolders'
+                    },
+                    {
+                        label: 'List Folder Contents',
+                        name: 'listContents'
+                    },
+                    {
+                        label: 'Get Folder Structure',
+                        name: 'getFolderStructure'
+                    }
+                ],
+                show: {
+                    smartActions: ['hierarchicalFolderNavigator']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Include Files',
+                name: 'includeFiles',
+                type: 'boolean',
+                description: 'Include files in folder content listing',
+                default: false,
+                show: {
+                    smartActions: ['hierarchicalFolderNavigator']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'File URL',
+                name: 'fileUrl',
+                type: 'string',
+                description: 'URL of the file to download and upload',
+                show: {
+                    smartActions: ['urlFileUploader']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Target Folder Name',
+                name: 'targetFolderName',
+                type: 'string',
+                description: 'Name of the target folder for file upload',
+                show: {
+                    smartActions: ['urlFileUploader']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
+                label: 'Folder Path',
+                name: 'folderPath',
+                type: 'string',
+                description: 'Hierarchical folder path (e.g., "Projects/2024/Client1")',
+                show: {
+                    smartActions: ['urlFileUploader']
+                },
+                additionalParams: true,
+                optional: true
             }
         ]
     }
 
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         let accessToken: string
-        const overrideAccessToken = nodeData.inputs?.vars?.access_token || nodeData.inputs?.access_token
+        const overrideAccessToken = nodeData.inputs?.vars?.access_token || nodeData.inputs?.access_token || nodeData.inputs?.accessToken
         if (overrideAccessToken) {
             accessToken = overrideAccessToken
         } else {
@@ -612,7 +737,29 @@ class GoogleDrive_Tools implements INode {
         }
 
         if (!accessToken) {
-            throw new Error('No access token found in credential')
+            throw new Error('No access token found in Google Drive credential')
+        }
+
+        let twilioCredentials = null
+        try {
+            const appDataSource = options.appDataSource
+            const databaseEntities = options.databaseEntities
+
+            const twilioCredential = await appDataSource.getRepository(databaseEntities['Credential']).findOne({
+                where: { credentialName: 'twilioApi' }
+            })
+
+            if (twilioCredential) {
+                const twilioCredentialData = await getCredentialData(twilioCredential.id, options)
+                if (twilioCredentialData) {
+                    twilioCredentials = {
+                        accountSid: twilioCredentialData.accountSid,
+                        authToken: twilioCredentialData.authToken
+                    }
+                }
+            }
+        } catch (error) {
+            // Twilio credentials are optional, so we don't need to log errors
         }
 
         const driveType = nodeData.inputs?.driveType as string
@@ -620,6 +767,7 @@ class GoogleDrive_Tools implements INode {
         const folderActions = convertMultiOptionsToStringArray(nodeData.inputs?.folderActions)
         const searchActions = convertMultiOptionsToStringArray(nodeData.inputs?.searchActions)
         const shareActions = convertMultiOptionsToStringArray(nodeData.inputs?.shareActions)
+        const smartActions = convertMultiOptionsToStringArray(nodeData.inputs?.smartActions)
 
         // Combine all actions based on type
         let actions: string[] = []
@@ -631,6 +779,8 @@ class GoogleDrive_Tools implements INode {
             actions = searchActions
         } else if (driveType === 'share') {
             actions = shareActions
+        } else if (driveType === 'smart') {
+            actions = smartActions
         }
 
         const defaultParams = this.transformNodeInputsToToolArgs(nodeData)
@@ -638,7 +788,8 @@ class GoogleDrive_Tools implements INode {
         const tools = createGoogleDriveTools({
             accessToken,
             actions,
-            defaultParams
+            defaultParams,
+            twilioCredentials
         })
 
         return tools
@@ -675,6 +826,24 @@ class GoogleDrive_Tools implements INode {
         if (nodeData.inputs?.supportsAllDrives !== undefined) defaultParams.supportsAllDrives = nodeData.inputs.supportsAllDrives
         if (nodeData.inputs?.fields) defaultParams.fields = nodeData.inputs.fields
         if (nodeData.inputs?.acknowledgeAbuse !== undefined) defaultParams.acknowledgeAbuse = nodeData.inputs.acknowledgeAbuse
+
+        // Smart tools parameters
+        if (nodeData.inputs?.twilioAccountSid) defaultParams.twilioAccountSid = nodeData.inputs.twilioAccountSid
+        if (nodeData.inputs?.twilioAuthToken) defaultParams.twilioAuthToken = nodeData.inputs.twilioAuthToken
+        if (nodeData.inputs?.folderName) defaultParams.folderName = nodeData.inputs.folderName
+        if (nodeData.inputs?.exactMatch) defaultParams.exactMatch = nodeData.inputs.exactMatch
+        if (nodeData.inputs?.navigationOperation) defaultParams.operation = nodeData.inputs.navigationOperation
+        if (nodeData.inputs?.includeFiles) defaultParams.includeFiles = nodeData.inputs.includeFiles
+        if (nodeData.inputs?.fileUrl) defaultParams.fileUrl = nodeData.inputs.fileUrl
+        if (nodeData.inputs?.targetFolderName) defaultParams.targetFolderName = nodeData.inputs.targetFolderName
+        if (nodeData.inputs?.folderPath) defaultParams.folderPath = nodeData.inputs.folderPath
+
+        if (nodeData.inputs?.twilioAccountSid && nodeData.inputs?.twilioAuthToken) {
+            defaultParams.twilioAuth = {
+                accountSid: nodeData.inputs.twilioAccountSid,
+                authToken: nodeData.inputs.twilioAuthToken
+            }
+        }
 
         return defaultParams
     }

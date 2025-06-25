@@ -2,6 +2,8 @@ import { z } from 'zod'
 import fetch from 'node-fetch'
 import { DynamicStructuredTool } from '../OpenAPIToolkit/core'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
+import { SmartFolderFinderTool, HierarchicalFolderNavigatorTool } from './smart-tools'
+import { URLFileUploaderTool } from './url-uploader'
 
 export const desc = `Use this when you want to access Google Drive API for managing files and folders`
 
@@ -22,6 +24,7 @@ export interface RequestParameters {
     actions?: string[]
     accessToken?: string
     defaultParams?: any
+    twilioCredentials?: any
 }
 
 // Define schemas for different Google Drive operations
@@ -921,6 +924,7 @@ export const createGoogleDriveTools = (args?: RequestParameters): DynamicStructu
     const actions = args?.actions || []
     const accessToken = args?.accessToken || ''
     const defaultParams = args?.defaultParams || {}
+    const twilioCredentials = args?.twilioCredentials
 
     if (actions.includes('listFiles')) {
         tools.push(new ListFilesTool({ accessToken, defaultParams }))
@@ -976,6 +980,19 @@ export const createGoogleDriveTools = (args?: RequestParameters): DynamicStructu
 
     if (actions.includes('removePermission')) {
         tools.push(new RemovePermissionTool({ accessToken, defaultParams }))
+    }
+
+    // Smart tools
+    if (actions.includes('smartFolderFinder')) {
+        tools.push(new SmartFolderFinderTool({ accessToken, defaultParams }))
+    }
+
+    if (actions.includes('hierarchicalFolderNavigator')) {
+        tools.push(new HierarchicalFolderNavigatorTool({ accessToken, defaultParams }))
+    }
+
+    if (actions.includes('urlFileUploader')) {
+        tools.push(new URLFileUploaderTool({ accessToken, defaultParams, twilioCredentials }))
     }
 
     return tools
