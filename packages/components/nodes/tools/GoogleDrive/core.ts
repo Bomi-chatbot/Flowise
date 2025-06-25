@@ -4,6 +4,8 @@ import { DynamicStructuredTool } from '../OpenAPIToolkit/core'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
 import { SmartFolderFinderTool, HierarchicalFolderNavigatorTool } from './smart-tools'
 import { URLFileUploaderTool } from './url-uploader'
+import { SmartFolderCreatorTool } from './smart-folder-creator'
+import { SmartFileUrlTool } from './smart-file-url'
 
 export const desc = `Use this when you want to access Google Drive API for managing files and folders`
 
@@ -993,6 +995,14 @@ export const createGoogleDriveTools = (args?: RequestParameters): DynamicStructu
 
     if (actions.includes('urlFileUploader')) {
         tools.push(new URLFileUploaderTool({ accessToken, defaultParams, twilioCredentials }))
+    }
+
+    if (actions.includes('smartFolderCreator')) {
+        tools.push(new SmartFolderCreatorTool({ accessToken, defaultParams }))
+    }
+
+    if (actions.includes('smartFileUrl')) {
+        tools.push(new SmartFileUrlTool({ accessToken, defaultParams }))
     }
 
     return tools

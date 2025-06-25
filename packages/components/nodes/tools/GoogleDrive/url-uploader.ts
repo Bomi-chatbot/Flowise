@@ -9,7 +9,17 @@ const URLFileUploaderSchema = z.object({
     targetFolderId: z.string().optional().describe('ID of the target folder (alternative to name)'),
     fileName: z.string().optional().describe('Custom name for the file'),
     folderPath: z.string().optional().describe('Hierarchical folder path (e.g., "Projects/2024")'),
-    overwriteExisting: z.boolean().optional().default(false).describe('Overwrite file if it already exists')
+    overwriteExisting: z.boolean().optional().default(false).describe('Overwrite file if it already exists'),
+    requireConfirmationToCreateFolder: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe('Require user confirmation before creating folders that do not exist'),
+    userConfirmedFolderCreation: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('User has confirmed folder creation (used internally after human input)')
 })
 
 interface TwilioAuthConfig {
@@ -28,7 +38,8 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
     constructor(args: any) {
         const toolInput = {
             name: 'url_file_uploader',
-            description: 'Downloads files from URLs (especially Twilio) and uploads them to Google Drive with intelligent folder search',
+            description:
+                'Downloads files from URLs (especially Twilio) and uploads them to Google Drive with intelligent folder search. Can request user confirmation before creating new folders.',
             schema: URLFileUploaderSchema,
             baseUrl: '',
             method: 'POST',
@@ -67,22 +78,55 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
 
             let targetFolderId = params.targetFolderId
             if (!targetFolderId) {
+                if (!params.folderPath && !params.targetFolderName) {
+                    throw new Error('Required targetFolderName, targetFolderId or folderPath')
+                }
+
                 if (params.folderPath) {
                     targetFolderId = await this.resolveFolderPath(params.folderPath)
                 } else if (params.targetFolderName) {
                     targetFolderId = await this.findFolderByName(params.targetFolderName)
-                } else {
-                    throw new Error('Required targetFolderName, targetFolderId or folderPath')
                 }
-            }
 
-            if (!targetFolderId) {
-                const result = {
-                    success: false,
-                    targetFolder: params.targetFolderName || params.folderPath,
-                    error: 'FOLDER_NOT_FOUND'
+                // If folder is not found, try to create it
+                if (!targetFolderId) {
+                    if (params.userConfirmedFolderCreation || !params.requireConfirmationToCreateFolder) {
+                        if (params.folderPath) {
+                            targetFolderId = await this.createFolderPath(params.folderPath)
+                        } else if (params.targetFolderName) {
+                            targetFolderId = await this.createFolderIfNotExists(params.targetFolderName)
+                        }
+
+                        if (!targetFolderId) {
+                            const result = {
+                                success: false,
+                                targetFolder: params.targetFolderName || params.folderPath,
+                                error: 'FOLDER_NOT_FOUND_AND_CREATION_FAILED',
+                                message: `Could not find or create folder: ${params.targetFolderName || params.folderPath}`
+                            }
+
+                            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+                        }
+                    } else {
+                        const folderToCreate = params.targetFolderName || params.folderPath
+                        const result = {
+                            success: false,
+                            error: 'FOLDER_NOT_FOUND_REQUIRES_CONFIRMATION',
+                            targetFolder: folderToCreate,
+                            message: `Folder "${folderToCreate}" not found. Do you want me to create it?`,
+                            suggestedAction: 'create_folder',
+                            requiresUserConfirmation: true,
+                            confirmationPrompt: `The folder "${folderToCreate}" does not exist. Would you like me to create it before uploading the file?`,
+                            humanInputAction: {
+                                type: 'folder_creation_confirmation',
+                                folderName: folderToCreate,
+                                fileUrl: params.fileUrl,
+                                fileName: params.fileName
+                            }
+                        }
+                        return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+                    }
                 }
-                return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
             }
 
             const downloadResult = await this.downloadFromURL(params.fileUrl, this.twilioCredentials || undefined)
@@ -400,6 +444,96 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
             const fileName = pathname.split('/').pop()
             return fileName && fileName.length > 0 ? fileName : null
         } catch {
+            return null
+        }
+    }
+
+    private async createFolderIfNotExists(folderName: string, parentId: string = 'root'): Promise<string | null> {
+        try {
+            const existingFolderId = await this.findFolderByName(folderName)
+            if (existingFolderId) {
+                return existingFolderId
+            }
+
+            const folderMetadata = {
+                name: folderName,
+                mimeType: 'application/vnd.google-apps.folder',
+                parents: [parentId]
+            }
+
+            const response = await fetch('https://www.googleapis.com/drive/v3/files', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${this.accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(folderMetadata)
+            })
+
+            if (!response.ok) {
+                const errorText = await response.text()
+                console.error(`Failed to create folder "${folderName}":`, errorText)
+                return null
+            }
+
+            const folderData = await response.json()
+            return folderData.id
+        } catch (error) {
+            console.error('Error creating folder:', error)
+            return null
+        }
+    }
+
+    private async createFolderPath(path: string): Promise<string | null> {
+        try {
+            if (!path || path.trim() === '' || path.toLowerCase() === 'root' || path.toLowerCase() === '/') {
+                return 'root'
+            }
+
+            const pathParts = path.split('/').filter((part) => part.trim().length > 0)
+            let currentFolderId = 'root'
+
+            for (const folderName of pathParts) {
+                if (folderName.toLowerCase() === 'root' || folderName.toLowerCase() === 'my drive') {
+                    currentFolderId = 'root'
+                    continue
+                }
+
+                const parentConstraint = currentFolderId === 'root' ? ` and 'root' in parents` : ` and '${currentFolderId}' in parents`
+                const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
+                const queryParams = new URLSearchParams()
+                queryParams.append('q', searchQuery)
+                queryParams.append('pageSize', '1')
+                queryParams.append('fields', 'files(id,name)')
+                const url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`
+                const response = await fetch(url, {
+                    headers: {
+                        Authorization: `Bearer ${this.accessToken}`,
+                        Accept: 'application/json'
+                    }
+                })
+
+                let found = false
+                if (response.ok) {
+                    const data = await response.json()
+                    if (data.files && data.files.length > 0) {
+                        currentFolderId = data.files[0].id
+                        found = true
+                    }
+                }
+
+                if (!found) {
+                    const newFolderId = await this.createFolderIfNotExists(folderName, currentFolderId)
+                    if (!newFolderId) {
+                        return null
+                    }
+                    currentFolderId = newFolderId
+                }
+            }
+
+            return currentFolderId
+        } catch (error) {
+            console.error('Error creating folder path:', error)
             return null
         }
     }
