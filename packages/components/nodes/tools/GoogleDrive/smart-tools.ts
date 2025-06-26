@@ -1,90 +1,21 @@
 import { z } from 'zod'
-import fetch from 'node-fetch'
 import { DynamicStructuredTool } from '../OpenAPIToolkit/core'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
-
-interface FolderCache {
-    id: string
-    name: string
-    parentId: string | null
-    path: string
-    lastUpdated: Date
-    children?: FolderCache[]
-}
+import {
+    findFolderByName,
+    clearExpiredCache,
+    buildFolderPath,
+    makeGoogleDriveRequest,
+    setCacheEntry,
+    searchFoldersWithFallback
+} from './google-drive-utils'
 
 export class BaseSmartGoogleDriveTool extends DynamicStructuredTool {
     protected accessToken: string = ''
-    protected static folderCache: Map<string, FolderCache> = new Map()
-    protected static cacheExpiry: number = 3600000
 
     constructor(args: any) {
         super(args)
         this.accessToken = args.accessToken ?? ''
-    }
-
-    async makeGoogleDriveRequest({
-        endpoint,
-        method = 'GET',
-        body,
-        params
-    }: {
-        endpoint: string
-        method?: string
-        body?: any
-        params?: any
-    }): Promise<string> {
-        const baseUrl = 'https://www.googleapis.com/drive/v3'
-        const url = `${baseUrl}/${endpoint}`
-
-        const headers: { [key: string]: string } = {
-            Authorization: `Bearer ${this.accessToken}`,
-            Accept: 'application/json',
-            ...this.headers
-        }
-
-        if (method !== 'GET' && body) {
-            headers['Content-Type'] = 'application/json'
-        }
-
-        const response = await fetch(url, {
-            method,
-            headers,
-            body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined
-        })
-
-        if (!response.ok) {
-            const errorText = await response.text()
-            throw new Error(`Google Drive API Error ${response.status}: ${response.statusText} - ${errorText}`)
-        }
-
-        const data = await response.text()
-        return data + TOOL_ARGS_PREFIX + JSON.stringify(params)
-    }
-
-    protected clearExpiredCache(): void {
-        const now = new Date()
-        for (const [key, folder] of BaseSmartGoogleDriveTool.folderCache.entries()) {
-            if (now.getTime() - folder.lastUpdated.getTime() > BaseSmartGoogleDriveTool.cacheExpiry) {
-                BaseSmartGoogleDriveTool.folderCache.delete(key)
-            }
-        }
-    }
-
-    protected buildFolderPath(folderId: string, folders: any[]): string {
-        const folderMap = new Map(folders.map((f) => [f.id, f]))
-        const path: string[] = []
-        let currentId = folderId
-
-        while (currentId && folderMap.has(currentId)) {
-            const folder = folderMap.get(currentId)
-            if (folder.name === 'My Drive' || !folder.parents || folder.parents.length === 0) {
-                break
-            }
-            path.unshift(folder.name)
-            currentId = folder.parents[0]
-        }
-
-        return path.join('/')
     }
 }
 
@@ -125,22 +56,26 @@ export class SmartFolderFinderTool extends BaseSmartGoogleDriveTool {
         const params = { ...arg, ...this.defaultParams }
 
         try {
-            this.clearExpiredCache()
+            clearExpiredCache()
             let parentConstraint = ''
             if (params.parentFolderId) {
                 parentConstraint = ` and '${params.parentFolderId}' in parents`
             } else if (params.parentFolderName) {
-                const parentResult = await this.findFolderByName(params.parentFolderName, true)
+                const parentResult = await findFolderByName(this.accessToken, params.parentFolderName, true)
                 if (parentResult.folders && parentResult.folders.length > 0) {
                     const parentId = parentResult.folders[0].id
                     parentConstraint = ` and '${parentId}' in parents`
                 }
             }
 
-            let searchResults = await this.performPrimarySearch(params.folderName, parentConstraint, params.exactMatch, params.maxResults)
-            if ((!searchResults.files || searchResults.files.length === 0) && !params.exactMatch && params.useFullTextSearch) {
-                searchResults = await this.performFallbackSearch(params.folderName, parentConstraint, params.maxResults)
-            }
+            let searchResults = await searchFoldersWithFallback(
+                this.accessToken,
+                params.folderName,
+                parentConstraint,
+                params.maxResults,
+                params.exactMatch,
+                params.useFullTextSearch
+            )
 
             if (searchResults.files && searchResults.files.length > 0) {
                 const allFoldersQuery = new URLSearchParams()
@@ -148,23 +83,23 @@ export class SmartFolderFinderTool extends BaseSmartGoogleDriveTool {
                 allFoldersQuery.append('pageSize', '1000')
                 allFoldersQuery.append('fields', 'files(id,name,parents)')
 
-                const allFoldersResponse = await this.makeGoogleDriveRequest({
+                const allFoldersResponse = await makeGoogleDriveRequest(this.accessToken, {
                     endpoint: `files?${allFoldersQuery.toString()}`,
                     params: {}
                 })
                 const allFoldersData = JSON.parse(allFoldersResponse.split(TOOL_ARGS_PREFIX)[0])
                 const enhancedFolders = searchResults.files.map((folder: any) => ({
                     ...folder,
-                    path: this.buildFolderPath(folder.id, allFoldersData.files || []),
+                    path: buildFolderPath(folder.id, allFoldersData.files || []),
                     fullPath:
                         folder.parents && folder.parents.length > 0
-                            ? this.buildFolderPath(folder.id, allFoldersData.files || []) + '/' + folder.name
+                            ? buildFolderPath(folder.id, allFoldersData.files || []) + '/' + folder.name
                             : folder.name,
                     searchMethod: searchResults.searchMethod
                 }))
 
                 enhancedFolders.forEach((folder: any) => {
-                    BaseSmartGoogleDriveTool.folderCache.set(folder.id, {
+                    setCacheEntry(this.accessToken, folder.id, {
                         id: folder.id,
                         name: folder.name,
                         parentId: folder.parents ? folder.parents[0] : null,
@@ -197,74 +132,6 @@ export class SmartFolderFinderTool extends BaseSmartGoogleDriveTool {
             }
         } catch (error) {
             return `Error searching folders: ${error}`
-        }
-    }
-
-    private async performPrimarySearch(
-        folderName: string,
-        parentConstraint: string,
-        exactMatch: boolean,
-        maxResults: number
-    ): Promise<any> {
-        let searchQuery = `mimeType='application/vnd.google-apps.folder'`
-        let searchMethod = ''
-
-        if (exactMatch) {
-            searchQuery += ` and name='${folderName}'${parentConstraint}`
-            searchMethod = 'exact_match'
-        } else {
-            searchQuery += ` and name contains '${folderName}'${parentConstraint}`
-            searchMethod = 'contains_match'
-        }
-
-        const queryParams = new URLSearchParams()
-        queryParams.append('q', searchQuery)
-        queryParams.append('pageSize', maxResults.toString())
-        queryParams.append('fields', 'files(id,name,parents,createdTime,modifiedTime,webViewLink)')
-
-        const endpoint = `files?${queryParams.toString()}`
-        const response = await this.makeGoogleDriveRequest({ endpoint, params: {} })
-        const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-
-        return {
-            files: responseData.files || [],
-            searchMethod
-        }
-    }
-
-    private async performFallbackSearch(folderName: string, parentConstraint: string, maxResults: number): Promise<any> {
-        const searchQuery = `mimeType='application/vnd.google-apps.folder' and fullText contains '${folderName}'${parentConstraint}`
-        const queryParams = new URLSearchParams()
-        queryParams.append('q', searchQuery)
-        queryParams.append('pageSize', maxResults.toString())
-        queryParams.append('fields', 'files(id,name,parents,createdTime,modifiedTime,webViewLink)')
-        const endpoint = `files?${queryParams.toString()}`
-        const response = await this.makeGoogleDriveRequest({ endpoint, params: {} })
-        const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-
-        return {
-            files: responseData.files || [],
-            searchMethod: 'fulltext_fuzzy'
-        }
-    }
-
-    private async findFolderByName(folderName: string, exactMatch: boolean = false): Promise<any> {
-        const searchQuery = exactMatch
-            ? `mimeType='application/vnd.google-apps.folder' and name='${folderName}'`
-            : `mimeType='application/vnd.google-apps.folder' and name contains '${folderName}'`
-
-        const queryParams = new URLSearchParams()
-        queryParams.append('q', searchQuery)
-        queryParams.append('pageSize', '10')
-        queryParams.append('fields', 'files(id,name,parents)')
-
-        const endpoint = `files?${queryParams.toString()}`
-        const response = await this.makeGoogleDriveRequest({ endpoint, params: {} })
-        const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-
-        return {
-            folders: responseData.files || [],
-            count: responseData.files ? responseData.files.length : 0
         }
     }
 }
@@ -302,7 +169,7 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
         const params = { ...arg, ...this.defaultParams }
 
         try {
-            this.clearExpiredCache()
+            clearExpiredCache()
 
             switch (params.operation) {
                 case 'listRoot':
@@ -329,7 +196,7 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
         queryParams.append('fields', 'files(id,name,createdTime,modifiedTime,webViewLink,size)')
 
         const endpoint = `files?${queryParams.toString()}`
-        const response = await this.makeGoogleDriveRequest({ endpoint, params })
+        const response = await makeGoogleDriveRequest(this.accessToken, { endpoint, params })
         const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
 
         const result = {
@@ -346,16 +213,10 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
     private async listSubfolders(params: any): Promise<string> {
         let parentId = params.parentFolderId
         if (!parentId && params.parentFolderName) {
-            const smartFinder = new SmartFolderFinderTool({ accessToken: this.accessToken })
-            const findResult = await smartFinder._call({
-                folderName: params.parentFolderName,
-                exactMatch: true,
-                maxResults: 1
-            })
-            const findData = JSON.parse(findResult.split(TOOL_ARGS_PREFIX)[0])
+            const findResult = await findFolderByName(this.accessToken, params.parentFolderName, true)
 
-            if (findData.success && findData.folders.length > 0) {
-                parentId = findData.folders[0].id
+            if (findResult.folders && findResult.folders.length > 0) {
+                parentId = findResult.folders.at(0).id
             } else {
                 const result = {
                     success: false,
@@ -378,7 +239,7 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
         queryParams.append('fields', 'files(id,name,createdTime,modifiedTime,webViewLink)')
 
         const endpoint = `files?${queryParams.toString()}`
-        const response = await this.makeGoogleDriveRequest({ endpoint, params })
+        const response = await makeGoogleDriveRequest(this.accessToken, { endpoint, params })
         const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
 
         const result = {
@@ -397,16 +258,10 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
     private async listFolderContents(params: any): Promise<string> {
         let folderId = params.parentFolderId
         if (!folderId && params.parentFolderName) {
-            const smartFinder = new SmartFolderFinderTool({ accessToken: this.accessToken })
-            const findResult = await smartFinder._call({
-                folderName: params.parentFolderName,
-                exactMatch: true,
-                maxResults: 1
-            })
-            const findData = JSON.parse(findResult.split(TOOL_ARGS_PREFIX)[0])
+            const findResult = await findFolderByName(this.accessToken, params.parentFolderName, true)
 
-            if (findData.success && findData.folders.length > 0) {
-                folderId = findData.folders[0].id
+            if (findResult.folders && findResult.folders.length > 0) {
+                folderId = findResult.folders.at(0).id
             } else {
                 const result = {
                     success: false,
@@ -428,7 +283,7 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
         queryParams.append('orderBy', params.sortBy)
         queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink)')
         const endpoint = `files?${queryParams.toString()}`
-        const response = await this.makeGoogleDriveRequest({ endpoint, params })
+        const response = await makeGoogleDriveRequest(this.accessToken, { endpoint, params })
         const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
         const contents = responseData.files || []
         const folders = contents.filter((item: any) => item.mimeType === 'application/vnd.google-apps.folder')

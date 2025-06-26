@@ -2,6 +2,7 @@ import { z } from 'zod'
 import fetch from 'node-fetch'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
 import { BaseSmartGoogleDriveTool } from './smart-tools'
+import { findFolderByName, resolveFolderPath, checkFileExists, createFolderIfNotExists, createFolderPath } from './google-drive-utils'
 
 const URLFileUploaderSchema = z.object({
     fileUrl: z.string().describe('URL of the file to download'),
@@ -84,9 +85,12 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
                 }
 
                 if (params.folderPath) {
-                    targetFolderId = await this.resolveFolderPath(params.folderPath)
+                    targetFolderId = await resolveFolderPath(this.accessToken, params.folderPath)
                 } else if (params.targetFolderName) {
-                    targetFolderId = await this.findFolderByName(params.targetFolderName)
+                    const folderResult = await findFolderByName(this.accessToken, params.targetFolderName, true)
+                    if (folderResult.folders && folderResult.folders.length > 0) {
+                        targetFolderId = folderResult.folders.at(0).id
+                    }
                 }
 
                 // If folder is not found, check if we need confirmation
@@ -114,9 +118,9 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
                     }
 
                     if (params.folderPath) {
-                        targetFolderId = await this.createFolderPath(params.folderPath)
+                        targetFolderId = await createFolderPath(this.accessToken, params.folderPath)
                     } else if (params.targetFolderName) {
-                        targetFolderId = await this.createFolderIfNotExists(params.targetFolderName)
+                        targetFolderId = await createFolderIfNotExists(this.accessToken, params.targetFolderName)
                     }
 
                     if (!targetFolderId) {
@@ -140,7 +144,7 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
             const fileName = params.fileName || this.extractFileNameFromURL(params.fileUrl) || `downloaded_file_${Date.now()}`
             const mimeType = this.detectMimeType(downloadResult.buffer, fileName)
             if (!params.overwriteExisting) {
-                const existingFile = await this.checkFileExists(fileName, targetFolderId)
+                const existingFile = await checkFileExists(this.accessToken, fileName, targetFolderId)
                 if (existingFile) {
                     const result = {
                         success: false,
@@ -292,155 +296,6 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
         return await response.json()
     }
 
-    private async findFolderByName(folderName: string): Promise<string | null> {
-        try {
-            if (folderName.toLowerCase() === 'root' || folderName.toLowerCase() === 'my drive') {
-                return 'root'
-            }
-
-            let searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'`
-            let queryParams = new URLSearchParams()
-            queryParams.append('q', searchQuery)
-            queryParams.append('pageSize', '1')
-            queryParams.append('fields', 'files(id,name)')
-            let url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`
-            let response = await fetch(url, {
-                headers: {
-                    Authorization: `Bearer ${this.accessToken}`,
-                    Accept: 'application/json'
-                }
-            })
-
-            if (response.ok) {
-                const data = await response.json()
-                if (data.files && data.files.length > 0) {
-                    return data.files[0].id
-                }
-            }
-
-            searchQuery = `mimeType='application/vnd.google-apps.folder' and name contains '${folderName}'`
-            queryParams = new URLSearchParams()
-            queryParams.append('q', searchQuery)
-            queryParams.append('pageSize', '1')
-            queryParams.append('fields', 'files(id,name)')
-
-            url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`
-            response = await fetch(url, {
-                headers: {
-                    Authorization: `Bearer ${this.accessToken}`,
-                    Accept: 'application/json'
-                }
-            })
-
-            if (response.ok) {
-                const data = await response.json()
-                if (data.files && data.files.length > 0) {
-                    return data.files[0].id
-                }
-            }
-
-            return null
-        } catch (error) {
-            console.error('Error finding folder by name:', error)
-            return null
-        }
-    }
-
-    private async resolveFolderPath(path: string): Promise<string | null> {
-        try {
-            if (!path || path.trim() === '' || path.toLowerCase() === 'root' || path.toLowerCase() === '/') {
-                return 'root'
-            }
-
-            const pathParts = path.split('/').filter((part) => part.trim().length > 0)
-            let currentFolderId = 'root'
-
-            for (const folderName of pathParts) {
-                if (folderName.toLowerCase() === 'root' || folderName.toLowerCase() === 'my drive') {
-                    currentFolderId = 'root'
-                    continue
-                }
-
-                const parentConstraint = currentFolderId === 'root' ? ` and 'root' in parents` : ` and '${currentFolderId}' in parents`
-                let searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
-                let queryParams = new URLSearchParams()
-                queryParams.append('q', searchQuery)
-                queryParams.append('pageSize', '1')
-                queryParams.append('fields', 'files(id,name)')
-                let url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`
-                let response = await fetch(url, {
-                    headers: {
-                        Authorization: `Bearer ${this.accessToken}`,
-                        Accept: 'application/json'
-                    }
-                })
-
-                let found = false
-                if (response.ok) {
-                    const data = await response.json()
-                    if (data.files && data.files.length > 0) {
-                        currentFolderId = data.files[0].id
-                        found = true
-                    }
-                }
-
-                if (!found) {
-                    searchQuery = `mimeType='application/vnd.google-apps.folder' and name contains '${folderName}'${parentConstraint}`
-                    queryParams = new URLSearchParams()
-                    queryParams.append('q', searchQuery)
-                    queryParams.append('pageSize', '1')
-                    queryParams.append('fields', 'files(id,name)')
-
-                    url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`
-                    response = await fetch(url, {
-                        headers: {
-                            Authorization: `Bearer ${this.accessToken}`,
-                            Accept: 'application/json'
-                        }
-                    })
-
-                    if (response.ok) {
-                        const data = await response.json()
-                        if (data.files && data.files.length > 0) {
-                            currentFolderId = data.files[0].id
-                            found = true
-                        }
-                    }
-                }
-
-                if (!found) {
-                    return null
-                }
-            }
-
-            return currentFolderId
-        } catch (error) {
-            console.error('Error resolving folder path:', error)
-            return null
-        }
-    }
-
-    private async checkFileExists(fileName: string, folderId: string): Promise<any> {
-        const queryParams = new URLSearchParams()
-        queryParams.append('q', `name='${fileName}' and '${folderId}' in parents`)
-        queryParams.append('pageSize', '1')
-        queryParams.append('fields', 'files(id,name)')
-        const url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`
-        const response = await fetch(url, {
-            headers: {
-                Authorization: `Bearer ${this.accessToken}`,
-                Accept: 'application/json'
-            }
-        })
-
-        if (response.ok) {
-            const data = await response.json()
-            return data.files && data.files.length > 0 ? data.files[0] : null
-        }
-
-        return null
-    }
-
     private extractFileNameFromURL(url: string): string | null {
         try {
             const urlObj = new URL(url)
@@ -448,96 +303,6 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
             const fileName = pathname.split('/').pop()
             return fileName && fileName.length > 0 ? fileName : null
         } catch {
-            return null
-        }
-    }
-
-    private async createFolderIfNotExists(folderName: string, parentId: string = 'root'): Promise<string | null> {
-        try {
-            const existingFolderId = await this.findFolderByName(folderName)
-            if (existingFolderId) {
-                return existingFolderId
-            }
-
-            const folderMetadata = {
-                name: folderName,
-                mimeType: 'application/vnd.google-apps.folder',
-                parents: [parentId]
-            }
-
-            const response = await fetch('https://www.googleapis.com/drive/v3/files', {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${this.accessToken}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(folderMetadata)
-            })
-
-            if (!response.ok) {
-                const errorText = await response.text()
-                console.error(`Failed to create folder "${folderName}":`, errorText)
-                return null
-            }
-
-            const folderData = await response.json()
-            return folderData.id
-        } catch (error) {
-            console.error('Error creating folder:', error)
-            return null
-        }
-    }
-
-    private async createFolderPath(path: string): Promise<string | null> {
-        try {
-            if (!path || path.trim() === '' || path.toLowerCase() === 'root' || path.toLowerCase() === '/') {
-                return 'root'
-            }
-
-            const pathParts = path.split('/').filter((part) => part.trim().length > 0)
-            let currentFolderId = 'root'
-
-            for (const folderName of pathParts) {
-                if (folderName.toLowerCase() === 'root' || folderName.toLowerCase() === 'my drive') {
-                    currentFolderId = 'root'
-                    continue
-                }
-
-                const parentConstraint = currentFolderId === 'root' ? ` and 'root' in parents` : ` and '${currentFolderId}' in parents`
-                const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
-                const queryParams = new URLSearchParams()
-                queryParams.append('q', searchQuery)
-                queryParams.append('pageSize', '1')
-                queryParams.append('fields', 'files(id,name)')
-                const url = `https://www.googleapis.com/drive/v3/files?${queryParams.toString()}`
-                const response = await fetch(url, {
-                    headers: {
-                        Authorization: `Bearer ${this.accessToken}`,
-                        Accept: 'application/json'
-                    }
-                })
-
-                let found = false
-                if (response.ok) {
-                    const data = await response.json()
-                    if (data.files && data.files.length > 0) {
-                        currentFolderId = data.files[0].id
-                        found = true
-                    }
-                }
-
-                if (!found) {
-                    const newFolderId = await this.createFolderIfNotExists(folderName, currentFolderId)
-                    if (!newFolderId) {
-                        return null
-                    }
-                    currentFolderId = newFolderId
-                }
-            }
-
-            return currentFolderId
-        } catch (error) {
-            console.error('Error creating folder path:', error)
             return null
         }
     }

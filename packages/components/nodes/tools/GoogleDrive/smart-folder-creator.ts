@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
 import { BaseSmartGoogleDriveTool } from './smart-tools'
+import { findFolderByName, clearExpiredCache, checkFolderExists, createFolderIfNotExists, createFolderPath } from './google-drive-utils'
 
 const SmartFolderCreatorSchema = z.object({
     folderName: z.string().describe('Name of the folder to create'),
@@ -34,9 +35,28 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
         const params = { ...arg, ...this.defaultParams }
 
         try {
-            this.clearExpiredCache()
+            clearExpiredCache()
             if (params.folderPath) {
-                return await this.createFolderPath(params.folderPath, params.description)
+                const folderId = await createFolderPath(this.accessToken, params.folderPath)
+                if (!folderId) {
+                    const result = {
+                        success: false,
+                        error: 'FOLDER_CREATION_FAILED',
+                        folderPath: params.folderPath,
+                        message: `Could not create folder path: ${params.folderPath}`
+                    }
+                    return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+                }
+
+                const result = {
+                    success: true,
+                    folderId: folderId,
+                    folderPath: params.folderPath,
+                    message: 'Folder path created successfully',
+                    alreadyExisted: false
+                }
+
+                return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
             }
 
             let parentId = 'root'
@@ -50,7 +70,7 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
                 parentId = parentResult.folderId
             }
 
-            const existingFolder = await this.checkFolderExists(params.folderName, parentId)
+            const existingFolder = await checkFolderExists(this.accessToken, params.folderName, parentId)
             if (existingFolder) {
                 const result = {
                     success: true,
@@ -64,8 +84,8 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
                 return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
             }
 
-            const createdFolder = await this.createFolder(params.folderName, parentId, params.description)
-            if (!createdFolder) {
+            const createdFolderId = await createFolderIfNotExists(this.accessToken, params.folderName, parentId)
+            if (!createdFolderId) {
                 const result = {
                     success: false,
                     error: 'FOLDER_CREATION_FAILED',
@@ -75,14 +95,15 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
                 return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
             }
 
+            const createdFolder = await checkFolderExists(this.accessToken, params.folderName, parentId)
             const result = {
                 success: true,
-                folderId: createdFolder.id,
+                folderId: createdFolderId,
                 folderName: params.folderName,
                 parentId: parentId,
                 message: 'Folder created successfully',
                 alreadyExisted: false,
-                webViewLink: createdFolder.webViewLink
+                webViewLink: createdFolder?.webViewLink || `https://drive.google.com/drive/folders/${createdFolderId}`
             }
 
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
@@ -95,121 +116,26 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
                 timestamp: new Date().toISOString()
             }
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
-        }
-    }
-
-    private async createFolderPath(path: string, description?: string): Promise<string> {
-        try {
-            if (!path || path.trim() === '' || path.toLowerCase() === 'root' || path.toLowerCase() === '/') {
-                const result = {
-                    success: false,
-                    error: 'INVALID_PATH',
-                    message: 'Invalid folder path provided'
-                }
-
-                return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify({ folderPath: path })
-            }
-
-            const pathParts = path.split('/').filter((part) => part.trim().length > 0)
-            let currentFolderId = 'root'
-            const createdFolders: any[] = []
-            const existingFolders: any[] = []
-
-            for (let i = 0; i < pathParts.length; i++) {
-                const folderName = pathParts[i]
-
-                if (folderName.toLowerCase() === 'root' || folderName.toLowerCase() === 'my drive') {
-                    currentFolderId = 'root'
-                    continue
-                }
-
-                const existingFolder = await this.checkFolderExists(folderName, currentFolderId)
-
-                if (existingFolder) {
-                    currentFolderId = existingFolder.id
-                    existingFolders.push({
-                        name: folderName,
-                        id: existingFolder.id,
-                        path: pathParts.slice(0, i + 1).join('/')
-                    })
-                } else {
-                    const isLastFolder = i === pathParts.length - 1
-                    const folderDescription = isLastFolder ? description : undefined
-                    const newFolder = await this.createFolder(folderName, currentFolderId, folderDescription)
-                    if (!newFolder) {
-                        const result = {
-                            success: false,
-                            error: 'FOLDER_CREATION_FAILED',
-                            failedAt: folderName,
-                            path: pathParts.slice(0, i + 1).join('/'),
-                            createdFolders: createdFolders,
-                            existingFolders: existingFolders
-                        }
-
-                        return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify({ folderPath: path })
-                    }
-
-                    currentFolderId = newFolder.id
-                    createdFolders.push({
-                        name: folderName,
-                        id: newFolder.id,
-                        path: pathParts.slice(0, i + 1).join('/'),
-                        webViewLink: newFolder.webViewLink
-                    })
-                }
-            }
-
-            const result = {
-                success: true,
-                finalFolderId: currentFolderId,
-                folderPath: path,
-                createdFolders: createdFolders,
-                existingFolders: existingFolders,
-                totalCreated: createdFolders.length,
-                totalExisting: existingFolders.length,
-                message: `Folder path created successfully. Created ${createdFolders.length} new folders, found ${existingFolders.length} existing folders.`
-            }
-
-            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify({ folderPath: path })
-        } catch (error) {
-            const result = {
-                success: false,
-                error: error instanceof Error ? error.message : String(error),
-                errorType: error instanceof Error ? error.constructor.name : 'UnknownError',
-                folderPath: path,
-                timestamp: new Date().toISOString()
-            }
-
-            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify({ folderPath: path })
         }
     }
 
     private async findParentFolder(parentFolderName: string, createIfNotExists: boolean): Promise<any> {
         try {
-            const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${parentFolderName}'`
-            const queryParams = new URLSearchParams()
-            queryParams.append('q', searchQuery)
-            queryParams.append('pageSize', '1')
-            queryParams.append('fields', 'files(id,name,webViewLink)')
-            const response = await this.makeGoogleDriveRequest({
-                endpoint: `files?${queryParams.toString()}`,
-                params: {}
-            })
-            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-            if (responseData.files && responseData.files.length > 0) {
+            const findResult = await findFolderByName(this.accessToken, parentFolderName, true)
+            if (findResult.folders && findResult.folders.length > 0) {
                 return {
                     success: true,
-                    folderId: responseData.files[0].id,
+                    folderId: findResult.folders.at(0).id,
                     folderName: parentFolderName
                 }
             }
 
             if (createIfNotExists) {
-                const newFolder = await this.createFolder(parentFolderName, 'root')
-                if (newFolder) {
+                const newFolderId = await createFolderIfNotExists(this.accessToken, parentFolderName, 'root')
+                if (newFolderId) {
                     return {
                         success: true,
-                        folderId: newFolder.id,
+                        folderId: newFolderId,
                         folderName: parentFolderName,
                         created: true
                     }
@@ -228,54 +154,6 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
                 error: error instanceof Error ? error.message : String(error),
                 folderName: parentFolderName
             }
-        }
-    }
-
-    private async checkFolderExists(folderName: string, parentId: string): Promise<any> {
-        try {
-            const parentConstraint = parentId === 'root' ? ` and 'root' in parents` : ` and '${parentId}' in parents`
-            const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
-            const queryParams = new URLSearchParams()
-            queryParams.append('q', searchQuery)
-            queryParams.append('pageSize', '1')
-            queryParams.append('fields', 'files(id,name,webViewLink)')
-            const response = await this.makeGoogleDriveRequest({
-                endpoint: `files?${queryParams.toString()}`,
-                params: {}
-            })
-
-            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-            return responseData.files && responseData.files.length > 0 ? responseData.files[0] : null
-        } catch (error) {
-            console.error('Error checking folder existence:', error)
-            return null
-        }
-    }
-
-    private async createFolder(folderName: string, parentId: string, description?: string): Promise<any> {
-        try {
-            const folderMetadata: any = {
-                name: folderName,
-                mimeType: 'application/vnd.google-apps.folder',
-                parents: [parentId]
-            }
-
-            if (description) {
-                folderMetadata.description = description
-            }
-
-            const response = await this.makeGoogleDriveRequest({
-                endpoint: 'files',
-                method: 'POST',
-                body: folderMetadata,
-                params: {}
-            })
-
-            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-            return responseData
-        } catch (error) {
-            console.error('Error creating folder:', error)
-            return null
         }
     }
 }

@@ -1,6 +1,14 @@
 import { z } from 'zod'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
 import { BaseSmartGoogleDriveTool } from './smart-tools'
+import {
+    clearExpiredCache,
+    getFileById,
+    resolveFolderPath,
+    findFolderByName,
+    findFileByName,
+    makeGoogleDriveRequest
+} from './google-drive-utils'
 
 const SmartFileUrlSchema = z.object({
     fileName: z.string().optional().describe('File name to search for'),
@@ -36,7 +44,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
         const params = { ...arg, ...this.defaultParams }
 
         try {
-            this.clearExpiredCache()
+            clearExpiredCache()
             if (!params.fileId && !params.fileName && !params.folderName && !params.folderId) {
                 const result = {
                     success: false,
@@ -49,7 +57,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
 
             let files: any[] = []
             if (params.fileId) {
-                const file = await this.getFileById(params.fileId)
+                const file = await getFileById(this.accessToken, params.fileId)
                 if (file) {
                     files = [file]
                 } else {
@@ -62,7 +70,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                     return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
                 }
             } else if (params.folderId) {
-                const folder = await this.getFileById(params.folderId)
+                const folder = await getFileById(this.accessToken, params.folderId)
                 if (folder) {
                     files = [folder]
                 } else {
@@ -150,56 +158,17 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
         }
     }
 
-    private async getFileById(fileId: string): Promise<any> {
-        try {
-            const queryParams = new URLSearchParams()
-            queryParams.append('fields', 'id,name,mimeType,size,createdTime,modifiedTime,webViewLink,webContentLink,parents')
-
-            const response = await this.makeGoogleDriveRequest({
-                endpoint: `files/${encodeURIComponent(fileId)}?${queryParams.toString()}`,
-                params: {}
-            })
-
-            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-            return responseData
-        } catch (error) {
-            console.error('Error getting file by ID:', error)
-            return null
-        }
-    }
-
     private async searchFilesByName(params: any): Promise<any[]> {
         try {
-            let searchQuery = ''
-            let folderConstraint = ''
+            let folderId: string | undefined = undefined
             if (params.folderId) {
-                folderConstraint = ` and '${params.folderId}' in parents`
+                folderId = params.folderId
             } else if (params.folderName || params.folderPath) {
-                const folderId = await this.resolveFolderId(params)
-                if (folderId) {
-                    folderConstraint = ` and '${folderId}' in parents`
-                }
+                folderId = (await this.resolveFolderId(params)) || undefined
             }
 
-            if (params.exactMatch) {
-                searchQuery = `name='${params.fileName}'${folderConstraint}`
-            } else {
-                searchQuery = `name contains '${params.fileName}'${folderConstraint}`
-            }
-
-            searchQuery += ` and mimeType != 'application/vnd.google-apps.folder'`
-            const queryParams = new URLSearchParams()
-            queryParams.append('q', searchQuery)
-            queryParams.append('pageSize', params.maxResults.toString())
-            queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink,webContentLink,parents)')
-            queryParams.append('orderBy', 'modifiedTime desc')
-            const response = await this.makeGoogleDriveRequest({
-                endpoint: `files?${queryParams.toString()}`,
-                params: {}
-            })
-
-            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-            return responseData.files || []
+            const result = await findFileByName(this.accessToken, params.fileName, params.exactMatch, folderId, params.maxResults)
+            return result.files || []
         } catch (error) {
             console.error('Error searching files by name:', error)
             return []
@@ -208,33 +177,15 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
 
     private async searchFoldersByName(params: any): Promise<any[]> {
         try {
-            let searchQuery = ''
-            let folderConstraint = ''
-            if (params.folderPath) {
-                const parentFolderId = await this.resolveFolderPath(params.folderPath)
+            const result = await findFolderByName(this.accessToken, params.folderName, params.exactMatch)
+            if (params.folderPath && result.folders && result.folders.length > 0) {
+                const parentFolderId = await resolveFolderPath(this.accessToken, params.folderPath)
                 if (parentFolderId) {
-                    folderConstraint = ` and '${parentFolderId}' in parents`
+                    return result.folders.filter((folder: any) => folder.parents && folder.parents.includes(parentFolderId))
                 }
             }
 
-            if (params.exactMatch) {
-                searchQuery = `name='${params.folderName}' and mimeType='application/vnd.google-apps.folder'${folderConstraint}`
-            } else {
-                searchQuery = `name contains '${params.folderName}' and mimeType='application/vnd.google-apps.folder'${folderConstraint}`
-            }
-
-            const queryParams = new URLSearchParams()
-            queryParams.append('q', searchQuery)
-            queryParams.append('pageSize', params.maxResults.toString())
-            queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink,webContentLink,parents)')
-            queryParams.append('orderBy', 'modifiedTime desc')
-            const response = await this.makeGoogleDriveRequest({
-                endpoint: `files?${queryParams.toString()}`,
-                params: {}
-            })
-
-            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-            return responseData.files || []
+            return result.folders || []
         } catch (error) {
             console.error('Error searching folders by name:', error)
             return []
@@ -248,85 +199,20 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
             }
 
             if (params.folderPath) {
-                return await this.resolveFolderPath(params.folderPath)
+                return await resolveFolderPath(this.accessToken, params.folderPath)
             }
 
             if (params.folderName) {
-                return await this.findFolderByName(params.folderName)
+                const result = await findFolderByName(this.accessToken, params.folderName, true)
+                if (result.folders && result.folders.length > 0) {
+                    return result.folders.at(0).id
+                }
+                return null
             }
 
             return null
         } catch (error) {
             console.error('Error resolving folder ID:', error)
-            return null
-        }
-    }
-
-    private async resolveFolderPath(path: string): Promise<string | null> {
-        try {
-            if (!path || path.trim() === '' || path.toLowerCase() === 'root' || path.toLowerCase() === '/') {
-                return 'root'
-            }
-
-            const pathParts = path.split('/').filter((part) => part.trim().length > 0)
-            let currentFolderId = 'root'
-
-            for (const folderName of pathParts) {
-                if (folderName.toLowerCase() === 'root' || folderName.toLowerCase() === 'my drive') {
-                    currentFolderId = 'root'
-                    continue
-                }
-
-                const parentConstraint = currentFolderId === 'root' ? ` and 'root' in parents` : ` and '${currentFolderId}' in parents`
-                const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
-                const queryParams = new URLSearchParams()
-                queryParams.append('q', searchQuery)
-                queryParams.append('pageSize', '1')
-                queryParams.append('fields', 'files(id,name)')
-                const response = await this.makeGoogleDriveRequest({
-                    endpoint: `files?${queryParams.toString()}`,
-                    params: {}
-                })
-
-                const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-                if (responseData.files && responseData.files.length > 0) {
-                    currentFolderId = responseData.files[0].id
-                } else {
-                    return null // Folder not found in path
-                }
-            }
-
-            return currentFolderId
-        } catch (error) {
-            console.error('Error resolving folder path:', error)
-            return null
-        }
-    }
-
-    private async findFolderByName(folderName: string): Promise<string | null> {
-        try {
-            if (folderName.toLowerCase() === 'root' || folderName.toLowerCase() === 'my drive') {
-                return 'root'
-            }
-
-            const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'`
-            const queryParams = new URLSearchParams()
-            queryParams.append('q', searchQuery)
-            queryParams.append('pageSize', '1')
-            queryParams.append('fields', 'files(id,name)')
-            const response = await this.makeGoogleDriveRequest({
-                endpoint: `files?${queryParams.toString()}`,
-                params: {}
-            })
-
-            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
-            if (responseData.files && responseData.files.length > 0) {
-                return responseData.files[0].id
-            }
-
-            return null
-        } catch (error) {
-            console.error('Error finding folder by name:', error)
             return null
         }
     }
@@ -390,9 +276,9 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
 
     private async getOrCreateShareUrl(fileId: string): Promise<string> {
         try {
-            const fileInfo = await this.getFileById(fileId)
+            const fileInfo = await getFileById(this.accessToken, fileId)
             const isFolder = fileInfo?.mimeType === 'application/vnd.google-apps.folder'
-            const permissionsResponse = await this.makeGoogleDriveRequest({
+            const permissionsResponse = await makeGoogleDriveRequest(this.accessToken, {
                 endpoint: `files/${encodeURIComponent(fileId)}/permissions`,
                 params: {}
             })
@@ -413,7 +299,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                 type: 'anyone'
             }
 
-            await this.makeGoogleDriveRequest({
+            await makeGoogleDriveRequest(this.accessToken, {
                 endpoint: `files/${encodeURIComponent(fileId)}/permissions`,
                 method: 'POST',
                 body: permissionData,
