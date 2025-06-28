@@ -525,7 +525,7 @@ class Agent_Agentflow implements INode {
                 }
                 const componentNode = options.componentNodes[agentSelectedTool]
 
-                const jsonSchema = zodToJsonSchema(tool.schema)
+                const jsonSchema = zodToJsonSchema(tool.schema as any)
                 if (jsonSchema.$schema) {
                     delete jsonSchema.$schema
                 }
