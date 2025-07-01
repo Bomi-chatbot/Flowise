@@ -698,6 +698,18 @@ class GoogleDrive_Tools implements INode {
                 optional: true
             },
             {
+                label: 'Search in Shared Files',
+                name: 'searchInShared',
+                type: 'boolean',
+                description: 'Search in files shared with me when explicitly requested',
+                default: false,
+                show: {
+                    smartActions: ['hierarchicalFolderNavigator']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
                 label: 'File URL',
                 name: 'fileUrl',
                 type: 'string',
@@ -927,6 +939,7 @@ class GoogleDrive_Tools implements INode {
         if (nodeData.inputs?.exactMatch) defaultParams.exactMatch = nodeData.inputs.exactMatch
         if (nodeData.inputs?.navigationOperation) defaultParams.operation = nodeData.inputs.navigationOperation
         if (nodeData.inputs?.includeFiles) defaultParams.includeFiles = nodeData.inputs.includeFiles
+        if (nodeData.inputs?.searchInShared) defaultParams.searchInShared = nodeData.inputs.searchInShared
         if (nodeData.inputs?.fileUrl) defaultParams.fileUrl = nodeData.inputs.fileUrl
         if (nodeData.inputs?.targetFolderName) defaultParams.targetFolderName = nodeData.inputs.targetFolderName
         if (nodeData.inputs?.folderPath) defaultParams.folderPath = nodeData.inputs.folderPath

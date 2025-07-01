@@ -143,7 +143,8 @@ const HierarchicalFolderNavigatorSchema = z.object({
     includeFiles: z.boolean().optional().default(false).describe('Include files in listing'),
     maxDepth: z.number().optional().default(1).describe('Maximum navigation depth'),
     sortBy: z.enum(['name', 'modifiedTime', 'createdTime']).optional().default('name').describe('Sort criteria'),
-    maxResults: z.number().optional().default(50).describe('Maximum number of results')
+    maxResults: z.number().optional().default(50).describe('Maximum number of results'),
+    searchInShared: z.boolean().optional().default(false).describe('Search in shared files when explicitly requested by user')
 })
 
 export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
@@ -256,6 +257,10 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
     }
 
     private async listFolderContents(params: any): Promise<string> {
+        if (params.searchInShared) {
+            return await this.searchInSharedFiles(params)
+        }
+
         let folderId = params.parentFolderId
         if (!folderId && params.parentFolderName) {
             const findResult = await findFolderByName(this.accessToken, params.parentFolderName, true)
@@ -318,5 +323,56 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
         }
 
         return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+    }
+
+    private async searchInSharedFiles(params: any): Promise<string> {
+        try {
+            const queryParams = new URLSearchParams()
+            let query = 'sharedWithMe=true'
+            // Only search for files, not folders
+            query += ` and mimeType != 'application/vnd.google-apps.folder'`
+            if (params.parentFolderName) {
+                query += ` and name contains '${params.parentFolderName}'`
+            }
+
+            queryParams.append('q', query)
+            queryParams.append('pageSize', params.maxResults.toString())
+            queryParams.append('orderBy', params.sortBy)
+            queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink,owners)')
+            const endpoint = `files?${queryParams.toString()}`
+            const response = await makeGoogleDriveRequest(this.accessToken, { endpoint, params })
+            const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
+            const files = responseData.files || []
+
+            const result = {
+                success: true,
+                operation: 'listContents',
+                searchInShared: true,
+                contents: files,
+                files: files,
+                folders: [],
+                folderCount: 0,
+                fileCount: files.length,
+                totalCount: files.length,
+                message: `Found ${files.length} shared files`
+            }
+
+            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+        } catch (error) {
+            const result = {
+                success: false,
+                operation: 'listContents',
+                searchInShared: true,
+                contents: [],
+                files: [],
+                folders: [],
+                folderCount: 0,
+                fileCount: 0,
+                totalCount: 0,
+                message: `Error searching shared files: ${error}`
+            }
+
+            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+        }
     }
 }
