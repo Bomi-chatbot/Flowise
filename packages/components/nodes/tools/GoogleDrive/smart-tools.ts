@@ -7,7 +7,8 @@ import {
     buildFolderPath,
     makeGoogleDriveRequest,
     setCacheEntry,
-    searchFoldersWithFallback
+    searchFoldersWithFallback,
+    addTrashedFilter
 } from './google-drive-utils'
 
 export class BaseSmartGoogleDriveTool extends DynamicStructuredTool {
@@ -29,7 +30,8 @@ const SmartFolderFinderSchema = z.object({
     parentFolderId: z.string().optional().describe('Parent folder ID to limit search'),
     parentFolderName: z.string().optional().describe('Parent folder name for hierarchical search'),
     maxResults: z.number().optional().default(10).describe('Maximum number of results'),
-    useFullTextSearch: z.boolean().optional().default(true).describe('Use Google Drive fullText search for better fuzzy matching')
+    useFullTextSearch: z.boolean().optional().default(true).describe('Use Google Drive fullText search for better fuzzy matching'),
+    includeTrashed: z.boolean().optional().default(false).describe('Include trashed/deleted files in search results')
 })
 
 export class SmartFolderFinderTool extends BaseSmartGoogleDriveTool {
@@ -61,7 +63,7 @@ export class SmartFolderFinderTool extends BaseSmartGoogleDriveTool {
             if (params.parentFolderId) {
                 parentConstraint = ` and '${params.parentFolderId}' in parents`
             } else if (params.parentFolderName) {
-                const parentResult = await findFolderByName(this.accessToken, params.parentFolderName, true)
+                const parentResult = await findFolderByName(this.accessToken, params.parentFolderName, true, params.includeTrashed)
                 if (parentResult.folders && parentResult.folders.length > 0) {
                     const parentId = parentResult.folders[0].id
                     parentConstraint = ` and '${parentId}' in parents`
@@ -74,12 +76,15 @@ export class SmartFolderFinderTool extends BaseSmartGoogleDriveTool {
                 parentConstraint,
                 params.maxResults,
                 params.exactMatch,
-                params.useFullTextSearch
+                params.useFullTextSearch,
+                params.includeTrashed
             )
 
             if (searchResults.files && searchResults.files.length > 0) {
                 const allFoldersQuery = new URLSearchParams()
-                allFoldersQuery.append('q', `mimeType='application/vnd.google-apps.folder'`)
+                const baseQuery = `mimeType='application/vnd.google-apps.folder'`
+                const filteredQuery = addTrashedFilter(baseQuery, params.includeTrashed)
+                allFoldersQuery.append('q', filteredQuery)
                 allFoldersQuery.append('pageSize', '1000')
                 allFoldersQuery.append('fields', 'files(id,name,parents)')
 
@@ -144,7 +149,8 @@ const HierarchicalFolderNavigatorSchema = z.object({
     maxDepth: z.number().optional().default(1).describe('Maximum navigation depth'),
     sortBy: z.enum(['name', 'modifiedTime', 'createdTime']).optional().default('name').describe('Sort criteria'),
     maxResults: z.number().optional().default(50).describe('Maximum number of results'),
-    searchInShared: z.boolean().optional().default(false).describe('Search in shared files when explicitly requested by user')
+    searchInShared: z.boolean().optional().default(false).describe('Search in shared files when explicitly requested by user'),
+    includeTrashed: z.boolean().optional().default(false).describe('Include trashed/deleted files in search results')
 })
 
 export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
@@ -191,7 +197,9 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
 
     private async listRootFolders(params: any): Promise<string> {
         const queryParams = new URLSearchParams()
-        queryParams.append('q', `mimeType='application/vnd.google-apps.folder' and 'root' in parents`)
+        const baseQuery = `mimeType='application/vnd.google-apps.folder' and 'root' in parents`
+        const filteredQuery = addTrashedFilter(baseQuery, params.includeTrashed)
+        queryParams.append('q', filteredQuery)
         queryParams.append('pageSize', params.maxResults.toString())
         queryParams.append('orderBy', params.sortBy)
         queryParams.append('fields', 'files(id,name,createdTime,modifiedTime,webViewLink,size)')
@@ -214,7 +222,7 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
     private async listSubfolders(params: any): Promise<string> {
         let parentId = params.parentFolderId
         if (!parentId && params.parentFolderName) {
-            const findResult = await findFolderByName(this.accessToken, params.parentFolderName, true)
+            const findResult = await findFolderByName(this.accessToken, params.parentFolderName, true, params.includeTrashed)
 
             if (findResult.folders && findResult.folders.length > 0) {
                 parentId = findResult.folders.at(0).id
@@ -234,7 +242,9 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
         }
 
         const queryParams = new URLSearchParams()
-        queryParams.append('q', `mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents`)
+        const baseQuery = `mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents`
+        const filteredQuery = addTrashedFilter(baseQuery, params.includeTrashed)
+        queryParams.append('q', filteredQuery)
         queryParams.append('pageSize', params.maxResults.toString())
         queryParams.append('orderBy', params.sortBy)
         queryParams.append('fields', 'files(id,name,createdTime,modifiedTime,webViewLink)')
@@ -263,7 +273,7 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
 
         let folderId = params.parentFolderId
         if (!folderId && params.parentFolderName) {
-            const findResult = await findFolderByName(this.accessToken, params.parentFolderName, true)
+            const findResult = await findFolderByName(this.accessToken, params.parentFolderName, true, params.includeTrashed)
 
             if (findResult.folders && findResult.folders.length > 0) {
                 folderId = findResult.folders.at(0).id
@@ -283,7 +293,9 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
         }
 
         const queryParams = new URLSearchParams()
-        queryParams.append('q', `'${folderId}' in parents`)
+        const baseQuery = `'${folderId}' in parents`
+        const filteredQuery = addTrashedFilter(baseQuery, params.includeTrashed)
+        queryParams.append('q', filteredQuery)
         queryParams.append('pageSize', params.maxResults.toString())
         queryParams.append('orderBy', params.sortBy)
         queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink)')

@@ -623,6 +623,18 @@ class GoogleDrive_Tools implements INode {
                 optional: true
             },
             {
+                label: 'Include Trashed Files',
+                name: 'includeTrashed',
+                type: 'boolean',
+                description: 'Include trashed/deleted files in search results',
+                default: false,
+                show: {
+                    smartActions: ['smartFolderFinder', 'hierarchicalFolderNavigator']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
                 label: 'Access Token Override',
                 name: 'accessToken',
                 type: 'string',
@@ -931,6 +943,7 @@ class GoogleDrive_Tools implements INode {
         if (nodeData.inputs?.supportsAllDrives !== undefined) defaultParams.supportsAllDrives = nodeData.inputs.supportsAllDrives
         if (nodeData.inputs?.fields) defaultParams.fields = nodeData.inputs.fields
         if (nodeData.inputs?.acknowledgeAbuse !== undefined) defaultParams.acknowledgeAbuse = nodeData.inputs.acknowledgeAbuse
+        if (nodeData.inputs?.includeTrashed) defaultParams.includeTrashed = nodeData.inputs.includeTrashed
 
         // Smart tools parameters
         if (nodeData.inputs?.twilioAccountSid) defaultParams.twilioAccountSid = nodeData.inputs.twilioAccountSid

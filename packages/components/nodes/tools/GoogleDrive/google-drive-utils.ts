@@ -1,6 +1,25 @@
 import fetch from 'node-fetch'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
 
+/**
+ * Adds trashed=false filter to Google Drive queries when includeTrashed is false
+ * @param query - The original Google Drive query
+ * @param includeTrashed - Whether to include trashed files (default: false)
+ * @returns Modified query with trashed filter if needed
+ */
+export function addTrashedFilter(query: string, includeTrashed: boolean = false): string {
+    if (includeTrashed) {
+        return query
+    }
+
+    if (!query.includes('trashed')) {
+        const connector = query.includes('and') || query.includes('=') ? ' and ' : ''
+        return query + connector + 'trashed=false'
+    }
+
+    return query
+}
+
 interface FolderCache {
     id: string
     name: string
@@ -45,10 +64,17 @@ function createCacheKey(accessToken: string, folderId: string): string {
 /**
  * Find folders by name with exact or partial matching
  */
-export async function findFolderByName(accessToken: string, folderName: string, exactMatch: boolean = false): Promise<any> {
-    const searchQuery = exactMatch
+export async function findFolderByName(
+    accessToken: string,
+    folderName: string,
+    exactMatch: boolean = false,
+    includeTrashed: boolean = false
+): Promise<any> {
+    const baseQuery = exactMatch
         ? `mimeType='application/vnd.google-apps.folder' and name='${folderName}'`
         : `mimeType='application/vnd.google-apps.folder' and name contains '${folderName}'`
+
+    const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
 
     const queryParams = new URLSearchParams()
     queryParams.append('q', searchQuery)
@@ -73,7 +99,8 @@ export async function findFileByName(
     fileName: string,
     exactMatch: boolean = false,
     folderId?: string,
-    maxResults: number = 10
+    maxResults: number = 10,
+    includeTrashed: boolean = false
 ): Promise<any> {
     let searchQuery = ''
     let folderConstraint = ''
@@ -89,6 +116,8 @@ export async function findFileByName(
     }
 
     searchQuery += ` and mimeType != 'application/vnd.google-apps.folder'`
+    searchQuery = addTrashedFilter(searchQuery, includeTrashed)
+
     const queryParams = new URLSearchParams()
     queryParams.append('q', searchQuery)
     queryParams.append('pageSize', maxResults.toString())
@@ -113,14 +142,12 @@ export async function searchFoldersWithFallback(
     parentConstraint: string,
     maxResults: number,
     exactMatch: boolean = false,
-    useFullTextSearch: boolean = true
+    useFullTextSearch: boolean = true,
+    includeTrashed: boolean = false
 ): Promise<any> {
-    // Primary search
-    let searchResults = await performPrimarySearch(accessToken, folderName, parentConstraint, exactMatch, maxResults)
-
-    // Fallback search if no results and conditions are met
+    let searchResults = await performPrimarySearch(accessToken, folderName, parentConstraint, exactMatch, maxResults, includeTrashed)
     if ((!searchResults.files || searchResults.files.length === 0) && !exactMatch && useFullTextSearch) {
-        searchResults = await performFallbackSearch(accessToken, folderName, parentConstraint, maxResults)
+        searchResults = await performFallbackSearch(accessToken, folderName, parentConstraint, maxResults, includeTrashed)
     }
 
     return searchResults
@@ -265,7 +292,8 @@ async function performPrimarySearch(
     folderName: string,
     parentConstraint: string,
     exactMatch: boolean,
-    maxResults: number
+    maxResults: number,
+    includeTrashed: boolean = false
 ): Promise<any> {
     let searchQuery = `mimeType='application/vnd.google-apps.folder'`
     let searchMethod = ''
@@ -277,6 +305,8 @@ async function performPrimarySearch(
         searchQuery += ` and name contains '${folderName}'${parentConstraint}`
         searchMethod = 'contains_match'
     }
+
+    searchQuery = addTrashedFilter(searchQuery, includeTrashed)
 
     const queryParams = new URLSearchParams()
     queryParams.append('q', searchQuery)
@@ -296,8 +326,16 @@ async function performPrimarySearch(
 /**
  * Fallback search implementation
  */
-async function performFallbackSearch(accessToken: string, folderName: string, parentConstraint: string, maxResults: number): Promise<any> {
-    const searchQuery = `mimeType='application/vnd.google-apps.folder' and fullText contains '${folderName}'${parentConstraint}`
+async function performFallbackSearch(
+    accessToken: string,
+    folderName: string,
+    parentConstraint: string,
+    maxResults: number,
+    includeTrashed: boolean = false
+): Promise<any> {
+    let searchQuery = `mimeType='application/vnd.google-apps.folder' and fullText contains '${folderName}'${parentConstraint}`
+    searchQuery = addTrashedFilter(searchQuery, includeTrashed)
+
     const queryParams = new URLSearchParams()
     queryParams.append('q', searchQuery)
     queryParams.append('pageSize', maxResults.toString())
@@ -315,7 +353,7 @@ async function performFallbackSearch(accessToken: string, folderName: string, pa
 /**
  * Resolve folder path to folder ID
  */
-export async function resolveFolderPath(accessToken: string, path: string): Promise<string | null> {
+export async function resolveFolderPath(accessToken: string, path: string, includeTrashed: boolean = false): Promise<string | null> {
     try {
         if (!path || path.trim() === '' || path.toLowerCase() === 'root' || path.toLowerCase() === '/') {
             return 'root'
@@ -331,7 +369,8 @@ export async function resolveFolderPath(accessToken: string, path: string): Prom
             }
 
             const parentConstraint = currentFolderId === 'root' ? ` and 'root' in parents` : ` and '${currentFolderId}' in parents`
-            const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
+            const baseQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
+            const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
             const queryParams = new URLSearchParams()
             queryParams.append('q', searchQuery)
             queryParams.append('pageSize', '1')
@@ -359,10 +398,17 @@ export async function resolveFolderPath(accessToken: string, path: string): Prom
 /**
  * Check if file exists in a specific folder
  */
-export async function checkFileExists(accessToken: string, fileName: string, folderId: string): Promise<any> {
+export async function checkFileExists(
+    accessToken: string,
+    fileName: string,
+    folderId: string,
+    includeTrashed: boolean = false
+): Promise<any> {
     try {
+        const baseQuery = `name='${fileName}' and '${folderId}' in parents`
+        const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
         const queryParams = new URLSearchParams()
-        queryParams.append('q', `name='${fileName}' and '${folderId}' in parents`)
+        queryParams.append('q', searchQuery)
         queryParams.append('pageSize', '1')
         queryParams.append('fields', 'files(id,name)')
         const response = await makeGoogleDriveRequest(accessToken, {
@@ -412,10 +458,16 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
 /**
  * Check if folder exists in a specific parent folder
  */
-export async function checkFolderExists(accessToken: string, folderName: string, parentId: string): Promise<any> {
+export async function checkFolderExists(
+    accessToken: string,
+    folderName: string,
+    parentId: string,
+    includeTrashed: boolean = false
+): Promise<any> {
     try {
         const parentConstraint = parentId === 'root' ? ` and 'root' in parents` : ` and '${parentId}' in parents`
-        const searchQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
+        const baseQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
+        const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
         const queryParams = new URLSearchParams()
         queryParams.append('q', searchQuery)
         queryParams.append('pageSize', '1')
