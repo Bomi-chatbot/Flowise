@@ -116,6 +116,10 @@ class GoogleCalendar_Tools implements INode {
                     {
                         label: 'Clear Calendar',
                         name: 'clearCalendar'
+                    },
+                    {
+                        label: 'Get Calendar Timezone',
+                        name: 'getCalendarTimezone'
                     }
                 ],
                 show: {
@@ -401,7 +405,7 @@ class GoogleCalendar_Tools implements INode {
                 type: 'string',
                 description: 'Calendar ID for operations on specific calendars',
                 show: {
-                    calendarActions: ['getCalendar', 'updateCalendar', 'deleteCalendar', 'clearCalendar']
+                    calendarActions: ['getCalendar', 'updateCalendar', 'deleteCalendar', 'clearCalendar', 'getCalendarTimezone']
                 },
                 additionalParams: true,
                 optional: true

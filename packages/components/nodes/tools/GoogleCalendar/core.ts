@@ -128,6 +128,11 @@ const QueryFreebusySchema = z.object({
     calendarExpansionMax: z.number().optional().describe('Maximum number of events that can be expanded for each calendar')
 })
 
+// Get Calendar Timezone Schema
+const GetCalendarTimezoneSchema = z.object({
+    calendarId: z.string().default('primary').describe('Calendar ID (use "primary" for primary calendar)')
+})
+
 class BaseGoogleCalendarTool extends DynamicStructuredTool {
     protected accessToken: string = ''
     protected sessionId: string = ''
@@ -742,6 +747,44 @@ class QueryFreebusyTool extends BaseGoogleCalendarTool {
     }
 }
 
+// Get Calendar Timezone Tool
+class GetCalendarTimezoneTool extends BaseGoogleCalendarTool {
+    defaultParams: any
+
+    constructor(args: any) {
+        const toolInput = {
+            name: 'get_calendar_timezone',
+            description: 'Get the timezone of a Google Calendar to provide timezone context to the agent',
+            schema: GetCalendarTimezoneSchema,
+            baseUrl: '',
+            method: 'GET',
+            headers: {}
+        }
+        super({
+            ...toolInput,
+            accessToken: args.accessToken
+        })
+        this.defaultParams = args.defaultParams || {}
+    }
+
+    async _call(arg: any): Promise<string> {
+        const params = { ...arg, ...this.defaultParams }
+
+        try {
+            const endpoint = `calendars/${encodeURIComponent(params.calendarId)}`
+            const response = await this.makeGoogleCalendarRequest({ endpoint, params })
+            const responseData = response.split(TOOL_ARGS_PREFIX)[0] // Remove tool args suffix
+            const calendarData = JSON.parse(responseData)
+            const timezone = calendarData.timeZone || 'UTC'
+            console.info(`[GetCalendarTimezoneTool] Retrieved timezone: ${timezone} for calendar: ${params.calendarId}`)
+            return timezone
+        } catch (error) {
+            console.error(`[GetCalendarTimezoneTool] Error getting calendar timezone: ${error}`)
+            return `Error getting calendar timezone: ${error}`
+        }
+    }
+}
+
 export const createGoogleCalendarTools = (args?: RequestParameters): DynamicStructuredTool[] => {
     const tools: DynamicStructuredTool[] = []
     const actions = args?.actions || []
@@ -867,6 +910,15 @@ export const createGoogleCalendarTools = (args?: RequestParameters): DynamicStru
             new QueryFreebusyTool({
                 accessToken,
                 defaultParams: defaultParams.queryFreebusy
+            })
+        )
+    }
+
+    if (actions.includes('getCalendarTimezone')) {
+        tools.push(
+            new GetCalendarTimezoneTool({
+                accessToken,
+                defaultParams: defaultParams.getCalendarTimezone
             })
         )
     }
