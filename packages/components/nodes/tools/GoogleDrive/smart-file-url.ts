@@ -16,7 +16,8 @@ const SmartFileUrlSchema = z.object({
     folderName: z.string().optional().describe('Folder name to search in'),
     folderId: z.string().optional().describe('Folder ID to search in'),
     folderPath: z.string().optional().describe('Hierarchical folder path (e.g., "Projects/2024")'),
-    urlType: z.enum(['view', 'download', 'share']).default('view').describe('Type of URL to generate'),
+    urlType: z.enum(['view', 'download']).default('view').describe('Type of URL to generate (view or download)'),
+    requestShareLink: z.boolean().optional().default(false).describe('Set to true to explicitly request a shareable link'),
     exactMatch: z.boolean().optional().default(false).describe('Exact file name match vs partial'),
     maxResults: z.number().optional().default(10).describe('Maximum number of files to return if multiple matches')
 })
@@ -27,7 +28,8 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
     constructor(args: any) {
         const toolInput = {
             name: 'smart_file_url',
-            description: 'Get file URLs intelligently by searching files by name, folder, or path with support for different URL types',
+            description:
+                'Get file URLs intelligently by searching files by name, folder, or path. Use requestShareLink=true to explicitly generate shareable links.',
             schema: SmartFileUrlSchema,
             baseUrl: '',
             method: 'GET',
@@ -120,7 +122,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
 
             const filesWithUrls = await Promise.all(
                 files.map(async (file) => {
-                    const urls = await this.generateFileUrls(file, params.urlType)
+                    const urls = await this.generateFileUrls(file, params.urlType, params.requestShareLink)
                     return {
                         ...file,
                         urls: urls
@@ -142,7 +144,9 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                           folderPath: params.folderPath,
                           exactMatch: params.exactMatch
                       },
-                message: `Found ${filesWithUrls.length} file(s) with ${params.urlType} URLs`
+                message: `Found ${filesWithUrls.length} file(s) with ${params.urlType} URLs${
+                    params.requestShareLink ? ' and share links' : ''
+                }`
             }
 
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
@@ -217,7 +221,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
         }
     }
 
-    private async generateFileUrls(file: any, urlType: string): Promise<any> {
+    private async generateFileUrls(file: any, urlType: string, requestShareLink: boolean = false): Promise<any> {
         try {
             const isFolder = file.mimeType === 'application/vnd.google-apps.folder'
             const urls: any = {}
@@ -229,7 +233,7 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
                 urls.download = file.webContentLink || `https://drive.google.com/uc?id=${file.id}&export=download`
             }
 
-            if (urlType === 'share' || urlType === 'all') {
+            if (requestShareLink) {
                 try {
                     const shareUrl = await this.getOrCreateShareUrl(file.id)
                     urls.share = shareUrl
@@ -241,17 +245,22 @@ export class SmartFileUrlTool extends BaseSmartGoogleDriveTool {
 
             switch (urlType) {
                 case 'view':
-                    return { view: urls.view }
+                    return {
+                        view: urls.view,
+                        ...(requestShareLink && { share: urls.share })
+                    }
                 case 'download':
                     if (isFolder) {
                         return {
                             download: null,
-                            message: 'Folders cannot be downloaded directly. Use view or share URL instead.'
+                            message: 'Folders cannot be downloaded directly. Use view or share URL instead.',
+                            ...(requestShareLink && { share: urls.share })
                         }
                     }
-                    return { download: urls.download }
-                case 'share':
-                    return { share: urls.share }
+                    return {
+                        download: urls.download,
+                        ...(requestShareLink && { share: urls.share })
+                    }
                 default:
                     return urls
             }
