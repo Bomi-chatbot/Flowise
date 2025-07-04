@@ -29,7 +29,7 @@ const SmartFolderFinderSchema = z.object({
         .describe('Exact or partial search (Google Drive search is case-insensitive by default)'),
     parentFolderId: z.string().optional().describe('Parent folder ID to limit search'),
     parentFolderName: z.string().optional().describe('Parent folder name for hierarchical search'),
-    maxResults: z.number().optional().default(10).describe('Maximum number of results'),
+    maxResults: z.number().optional().default(50).describe('Maximum number of results'),
     useFullTextSearch: z.boolean().optional().default(true).describe('Use Google Drive fullText search for better fuzzy matching'),
     includeTrashed: z.boolean().optional().default(false).describe('Include trashed/deleted files in search results')
 })
@@ -196,12 +196,15 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
     }
 
     private async listRootFolders(params: any): Promise<string> {
+        const validSortValues = ['name', 'modifiedTime', 'createdTime']
+        const sortBy = params.sortBy && validSortValues.includes(params.sortBy) ? params.sortBy : 'name'
+
         const queryParams = new URLSearchParams()
         const baseQuery = `mimeType='application/vnd.google-apps.folder' and 'root' in parents`
         const filteredQuery = addTrashedFilter(baseQuery, params.includeTrashed)
         queryParams.append('q', filteredQuery)
         queryParams.append('pageSize', params.maxResults.toString())
-        queryParams.append('orderBy', params.sortBy)
+        queryParams.append('orderBy', sortBy)
         queryParams.append('fields', 'files(id,name,createdTime,modifiedTime,webViewLink,size)')
 
         const endpoint = `files?${queryParams.toString()}`
@@ -237,16 +240,18 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
             }
         }
 
-        if (!parentId) {
-            throw new Error('Required parentFolderId or parentFolderName')
+        if (!parentId || parentId === 'undefined' || parentId === 'null' || parentId.trim() === '') {
+            throw new Error('Invalid or missing parent folder ID. Required parentFolderId or parentFolderName')
         }
 
+        const validSortValues = ['name', 'modifiedTime', 'createdTime']
+        const sortBy = params.sortBy && validSortValues.includes(params.sortBy) ? params.sortBy : 'name'
         const queryParams = new URLSearchParams()
         const baseQuery = `mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents`
         const filteredQuery = addTrashedFilter(baseQuery, params.includeTrashed)
         queryParams.append('q', filteredQuery)
         queryParams.append('pageSize', params.maxResults.toString())
-        queryParams.append('orderBy', params.sortBy)
+        queryParams.append('orderBy', sortBy)
         queryParams.append('fields', 'files(id,name,createdTime,modifiedTime,webViewLink)')
 
         const endpoint = `files?${queryParams.toString()}`
@@ -288,17 +293,23 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
             }
         }
 
-        if (!folderId) {
-            throw new Error('Required parentFolderId or parentFolderName')
+        if (!folderId || folderId === 'undefined' || folderId === 'null' || folderId.trim() === '') {
+            throw new Error('Invalid or missing folder ID. Required parentFolderId or parentFolderName')
         }
+
+        const validSortValues = ['name', 'modifiedTime', 'createdTime']
+        const sortBy = params.sortBy && validSortValues.includes(params.sortBy) ? params.sortBy : 'name'
+        const maxResults = params.maxResults || 50
 
         const queryParams = new URLSearchParams()
         const baseQuery = `'${folderId}' in parents`
         const filteredQuery = addTrashedFilter(baseQuery, params.includeTrashed)
+
         queryParams.append('q', filteredQuery)
-        queryParams.append('pageSize', params.maxResults.toString())
-        queryParams.append('orderBy', params.sortBy)
+        queryParams.append('pageSize', maxResults.toString())
+        queryParams.append('orderBy', sortBy)
         queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink)')
+
         const endpoint = `files?${queryParams.toString()}`
         const response = await makeGoogleDriveRequest(this.accessToken, { endpoint, params })
         const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
@@ -317,7 +328,8 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
             folderCount: folders.length,
             fileCount: files.length,
             totalCount: contents.length,
-            message: `Folder contains ${folders.length} folders and ${files.length} files`
+            maxResults: maxResults,
+            message: `Folder contains ${folders.length} folders and ${files.length} files (showing up to ${maxResults} items). To see more items, specify a higher maxResults value.`
         }
 
         return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
@@ -339,17 +351,19 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
 
     private async searchInSharedFiles(params: any): Promise<string> {
         try {
+            const validSortValues = ['name', 'modifiedTime', 'createdTime']
+            const sortBy = params.sortBy && validSortValues.includes(params.sortBy) ? params.sortBy : 'name'
             const queryParams = new URLSearchParams()
             let query = 'sharedWithMe=true'
-            // Only search for files, not folders
             query += ` and mimeType != 'application/vnd.google-apps.folder'`
             if (params.parentFolderName) {
-                query += ` and name contains '${params.parentFolderName}'`
+                const escapedFolderName = params.parentFolderName.replace(/'/g, "\\'")
+                query += ` and name contains '${escapedFolderName}'`
             }
 
             queryParams.append('q', query)
             queryParams.append('pageSize', params.maxResults.toString())
-            queryParams.append('orderBy', params.sortBy)
+            queryParams.append('orderBy', sortBy)
             queryParams.append('fields', 'files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink,owners)')
             const endpoint = `files?${queryParams.toString()}`
             const response = await makeGoogleDriveRequest(this.accessToken, { endpoint, params })

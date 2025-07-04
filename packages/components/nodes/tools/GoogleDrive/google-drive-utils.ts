@@ -13,7 +13,7 @@ export function addTrashedFilter(query: string, includeTrashed: boolean = false)
     }
 
     if (!query.includes('trashed')) {
-        const connector = query.includes('and') || query.includes('=') ? ' and ' : ''
+        const connector = query.trim().length > 0 ? ' and ' : ''
         return query + connector + 'trashed=false'
     }
 
@@ -70,9 +70,11 @@ export async function findFolderByName(
     exactMatch: boolean = false,
     includeTrashed: boolean = false
 ): Promise<any> {
+    const escapedFolderName = folderName.replace(/'/g, "\\'")
+
     const baseQuery = exactMatch
-        ? `mimeType='application/vnd.google-apps.folder' and name='${folderName}'`
-        : `mimeType='application/vnd.google-apps.folder' and name contains '${folderName}'`
+        ? `mimeType='application/vnd.google-apps.folder' and name='${escapedFolderName}'`
+        : `mimeType='application/vnd.google-apps.folder' and name contains '${escapedFolderName}'`
 
     const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
 
@@ -109,10 +111,11 @@ export async function findFileByName(
         folderConstraint = ` and '${folderId}' in parents`
     }
 
+    const escapedFileName = fileName.replace(/'/g, "\\'")
     if (exactMatch) {
-        searchQuery = `name='${fileName}'${folderConstraint}`
+        searchQuery = `name='${escapedFileName}'${folderConstraint}`
     } else {
-        searchQuery = `name contains '${fileName}'${folderConstraint}`
+        searchQuery = `name contains '${escapedFileName}'${folderConstraint}`
     }
 
     searchQuery += ` and mimeType != 'application/vnd.google-apps.folder'`
@@ -298,11 +301,12 @@ async function performPrimarySearch(
     let searchQuery = `mimeType='application/vnd.google-apps.folder'`
     let searchMethod = ''
 
+    const escapedFolderName = folderName.replace(/'/g, "\\'")
     if (exactMatch) {
-        searchQuery += ` and name='${folderName}'${parentConstraint}`
+        searchQuery += ` and name='${escapedFolderName}'${parentConstraint}`
         searchMethod = 'exact_match'
     } else {
-        searchQuery += ` and name contains '${folderName}'${parentConstraint}`
+        searchQuery += ` and name contains '${escapedFolderName}'${parentConstraint}`
         searchMethod = 'contains_match'
     }
 
@@ -333,7 +337,8 @@ async function performFallbackSearch(
     maxResults: number,
     includeTrashed: boolean = false
 ): Promise<any> {
-    let searchQuery = `mimeType='application/vnd.google-apps.folder' and fullText contains '${folderName}'${parentConstraint}`
+    const escapedFolderName = folderName.replace(/'/g, "\\'")
+    let searchQuery = `mimeType='application/vnd.google-apps.folder' and fullText contains '${escapedFolderName}'${parentConstraint}`
     searchQuery = addTrashedFilter(searchQuery, includeTrashed)
 
     const queryParams = new URLSearchParams()
@@ -369,7 +374,8 @@ export async function resolveFolderPath(accessToken: string, path: string, inclu
             }
 
             const parentConstraint = currentFolderId === 'root' ? ` and 'root' in parents` : ` and '${currentFolderId}' in parents`
-            const baseQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
+            const escapedFolderName = folderName.replace(/'/g, "\\'")
+            const baseQuery = `mimeType='application/vnd.google-apps.folder' and name='${escapedFolderName}'${parentConstraint}`
             const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
             const queryParams = new URLSearchParams()
             queryParams.append('q', searchQuery)
@@ -405,7 +411,8 @@ export async function checkFileExists(
     includeTrashed: boolean = false
 ): Promise<any> {
     try {
-        const baseQuery = `name='${fileName}' and '${folderId}' in parents`
+        const escapedFileName = fileName.replace(/'/g, "\\'")
+        const baseQuery = `name='${escapedFileName}' and '${folderId}' in parents`
         const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
         const queryParams = new URLSearchParams()
         queryParams.append('q', searchQuery)
@@ -466,7 +473,8 @@ export async function checkFolderExists(
 ): Promise<any> {
     try {
         const parentConstraint = parentId === 'root' ? ` and 'root' in parents` : ` and '${parentId}' in parents`
-        const baseQuery = `mimeType='application/vnd.google-apps.folder' and name='${folderName}'${parentConstraint}`
+        const escapedFolderName = folderName.replace(/'/g, "\\'")
+        const baseQuery = `mimeType='application/vnd.google-apps.folder' and name='${escapedFolderName}'${parentConstraint}`
         const searchQuery = addTrashedFilter(baseQuery, includeTrashed)
         const queryParams = new URLSearchParams()
         queryParams.append('q', searchQuery)
