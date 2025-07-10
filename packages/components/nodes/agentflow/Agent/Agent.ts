@@ -21,6 +21,7 @@ import { flatten } from 'lodash'
 import zodToJsonSchema from 'zod-to-json-schema'
 import { getErrorMessage } from '../../../src/error'
 import { DataSource } from 'typeorm'
+import removeMarkdown from 'remove-markdown'
 import {
     getPastChatHistoryImageMessages,
     getUniqueImageMessages,
@@ -233,6 +234,14 @@ class Agent_Agentflow implements INode {
                 type: 'boolean',
                 description: 'Enable memory for the conversation thread',
                 default: true,
+                optional: true
+            },
+            {
+                label: 'Remove Markdown from Response',
+                name: 'agentRemoveMarkdown',
+                type: 'boolean',
+                description: 'Remove markdown formatting from the agent response',
+                default: false,
                 optional: true
             },
             {
@@ -465,6 +474,14 @@ class Agent_Agentflow implements INode {
         }
     }
 
+    private cleanMarkdownIfEnabled(content: string, removeMarkdownEnabled: boolean): string {
+        if (!removeMarkdownEnabled || !content) {
+            return content
+        }
+
+        return removeMarkdown(content)
+    }
+
     async run(nodeData: INodeData, input: string | Record<string, any>, options: ICommonObject): Promise<any> {
         let llmIds: ICommonObject | undefined
         let analyticHandlers = options.analyticHandlers as AnalyticHandler
@@ -689,6 +706,7 @@ class Agent_Agentflow implements INode {
 
             // Extract memory and configuration options
             const enableMemory = nodeData.inputs?.agentEnableMemory as boolean
+            const removeMarkdownEnabled = nodeData.inputs?.agentRemoveMarkdown as boolean
             const memoryType = nodeData.inputs?.agentMemoryType as string
             const userMessage = nodeData.inputs?.agentUserMessage as string
             const _agentUpdateState = nodeData.inputs?.agentUpdateState
@@ -845,7 +863,8 @@ class Agent_Agentflow implements INode {
                     llmWithoutToolsBind,
                     isStreamable,
                     isLastNode,
-                    iterationContext
+                    iterationContext,
+                    removeMarkdownEnabled
                 })
 
                 response = result.response
@@ -874,7 +893,14 @@ class Agent_Agentflow implements INode {
                 }
             } else {
                 if (isStreamable) {
-                    response = await this.handleStreamingResponse(sseStreamer, llmNodeInstance, messages, chatId, abortController)
+                    response = await this.handleStreamingResponse(
+                        sseStreamer,
+                        llmNodeInstance,
+                        messages,
+                        chatId,
+                        abortController,
+                        removeMarkdownEnabled
+                    )
                 } else {
                     response = await llmNodeInstance.invoke(messages, { signal: abortController?.signal })
                 }
@@ -893,7 +919,8 @@ class Agent_Agentflow implements INode {
                     llmNodeInstance,
                     isStreamable,
                     isLastNode,
-                    iterationContext
+                    iterationContext,
+                    removeMarkdownEnabled
                 })
 
                 response = result.response
@@ -926,6 +953,8 @@ class Agent_Agentflow implements INode {
                 if (typeof response.content === 'string') {
                     responseContent = response.content
                 }
+
+                responseContent = this.cleanMarkdownIfEnabled(responseContent, removeMarkdownEnabled)
                 sseStreamer.streamTokenEvent(chatId, responseContent)
             }
 
@@ -955,6 +984,8 @@ class Agent_Agentflow implements INode {
             } else {
                 finalResponse = JSON.stringify(response, null, 2)
             }
+
+            finalResponse = this.cleanMarkdownIfEnabled(finalResponse, removeMarkdownEnabled)
             const output = this.prepareOutputObject(
                 response,
                 availableTools,
@@ -1222,7 +1253,8 @@ class Agent_Agentflow implements INode {
         llmNodeInstance: BaseChatModel,
         messages: BaseMessageLike[],
         chatId: string,
-        abortController: AbortController
+        abortController: AbortController,
+        removeMarkdownEnabled: boolean
     ): Promise<AIMessageChunk> {
         let response = new AIMessageChunk('')
 
@@ -1236,6 +1268,7 @@ class Agent_Agentflow implements INode {
                     } else {
                         content = chunk.content.toString()
                     }
+
                     sseStreamer.streamTokenEvent(chatId, content)
                 }
 
@@ -1249,6 +1282,11 @@ class Agent_Agentflow implements INode {
             const responseContents = response.content as MessageContentText[]
             response.content = responseContents.map((item) => item.text).join('')
         }
+
+        if (typeof response.content === 'string') {
+            response.content = this.cleanMarkdownIfEnabled(response.content, removeMarkdownEnabled)
+        }
+
         return response
     }
 
@@ -1353,7 +1391,8 @@ class Agent_Agentflow implements INode {
         llmNodeInstance,
         isStreamable,
         isLastNode,
-        iterationContext
+        iterationContext,
+        removeMarkdownEnabled
     }: {
         response: AIMessageChunk
         messages: BaseMessageLike[]
@@ -1367,6 +1406,7 @@ class Agent_Agentflow implements INode {
         isStreamable: boolean
         isLastNode: boolean
         iterationContext: ICommonObject
+        removeMarkdownEnabled: boolean
     }): Promise<{
         response: AIMessageChunk
         usedTools: IUsedTool[]
@@ -1516,7 +1556,10 @@ class Agent_Agentflow implements INode {
             const selectedTool = toolsInstance.find((tool) => tool.name === response.tool_calls?.[0]?.name)
             if (selectedTool && selectedTool.returnDirect) {
                 const lastToolOutput = usedTools[0]?.toolOutput || ''
-                const lastToolOutputString = typeof lastToolOutput === 'string' ? lastToolOutput : JSON.stringify(lastToolOutput, null, 2)
+                let lastToolOutputString =
+                    typeof lastToolOutput === 'string'
+                        ? this.cleanMarkdownIfEnabled(lastToolOutput, removeMarkdownEnabled)
+                        : JSON.stringify(lastToolOutput, null, 2)
 
                 if (sseStreamer) {
                     sseStreamer.streamTokenEvent(chatId, lastToolOutputString)
@@ -1536,7 +1579,14 @@ class Agent_Agentflow implements INode {
         let newResponse: AIMessageChunk
 
         if (isStreamable) {
-            newResponse = await this.handleStreamingResponse(sseStreamer, llmNodeInstance, messages, chatId, abortController)
+            newResponse = await this.handleStreamingResponse(
+                sseStreamer,
+                llmNodeInstance,
+                messages,
+                chatId,
+                abortController,
+                removeMarkdownEnabled
+            )
         } else {
             newResponse = await llmNodeInstance.invoke(messages, { signal: abortController?.signal })
 
@@ -1544,7 +1594,7 @@ class Agent_Agentflow implements INode {
             if (isLastNode && sseStreamer) {
                 let responseContent = JSON.stringify(newResponse, null, 2)
                 if (typeof newResponse.content === 'string') {
-                    responseContent = newResponse.content
+                    responseContent = this.cleanMarkdownIfEnabled(newResponse.content, removeMarkdownEnabled)
                 }
                 sseStreamer.streamTokenEvent(chatId, responseContent)
             }
@@ -1576,7 +1626,8 @@ class Agent_Agentflow implements INode {
                 llmNodeInstance,
                 isStreamable,
                 isLastNode,
-                iterationContext
+                iterationContext,
+                removeMarkdownEnabled
             })
 
             // Merge results from recursive tool calls
@@ -1607,7 +1658,8 @@ class Agent_Agentflow implements INode {
         llmWithoutToolsBind,
         isStreamable,
         isLastNode,
-        iterationContext
+        iterationContext,
+        removeMarkdownEnabled
     }: {
         humanInput: IHumanInput
         humanInputAction: Record<string, any> | undefined
@@ -1622,6 +1674,7 @@ class Agent_Agentflow implements INode {
         isStreamable: boolean
         isLastNode: boolean
         iterationContext: ICommonObject
+        removeMarkdownEnabled: boolean
     }): Promise<{
         response: AIMessageChunk
         usedTools: IUsedTool[]
@@ -1788,7 +1841,10 @@ class Agent_Agentflow implements INode {
             const selectedTool = toolsInstance.find((tool) => tool.name === response.tool_calls?.[0]?.name)
             if (selectedTool && selectedTool.returnDirect) {
                 const lastToolOutput = usedTools[0]?.toolOutput || ''
-                const lastToolOutputString = typeof lastToolOutput === 'string' ? lastToolOutput : JSON.stringify(lastToolOutput, null, 2)
+                let lastToolOutputString =
+                    typeof lastToolOutput === 'string'
+                        ? this.cleanMarkdownIfEnabled(lastToolOutput, removeMarkdownEnabled)
+                        : JSON.stringify(lastToolOutput, null, 2)
 
                 if (sseStreamer) {
                     sseStreamer.streamTokenEvent(chatId, lastToolOutputString)
@@ -1817,7 +1873,14 @@ class Agent_Agentflow implements INode {
         }
 
         if (isStreamable) {
-            newResponse = await this.handleStreamingResponse(sseStreamer, llmNodeInstance, messages, chatId, abortController)
+            newResponse = await this.handleStreamingResponse(
+                sseStreamer,
+                llmNodeInstance,
+                messages,
+                chatId,
+                abortController,
+                removeMarkdownEnabled
+            )
         } else {
             newResponse = await llmNodeInstance.invoke(messages, { signal: abortController?.signal })
 
@@ -1825,7 +1888,7 @@ class Agent_Agentflow implements INode {
             if (isLastNode && sseStreamer) {
                 let responseContent = JSON.stringify(newResponse, null, 2)
                 if (typeof newResponse.content === 'string') {
-                    responseContent = newResponse.content
+                    responseContent = this.cleanMarkdownIfEnabled(newResponse.content, removeMarkdownEnabled)
                 }
                 sseStreamer.streamTokenEvent(chatId, responseContent)
             }
@@ -1857,7 +1920,8 @@ class Agent_Agentflow implements INode {
                 llmNodeInstance,
                 isStreamable,
                 isLastNode,
-                iterationContext
+                iterationContext,
+                removeMarkdownEnabled
             })
 
             // Merge results from recursive tool calls
