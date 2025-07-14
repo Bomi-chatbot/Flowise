@@ -83,6 +83,15 @@ class GoogleGenerativeAI_ChatModels implements INode {
                 additionalParams: true
             },
             {
+                label: 'Force JSON Output',
+                name: 'json',
+                type: 'boolean',
+                description: 'Whether or not to force the model to respond with JSON. Available for `gemini-1.5` models and later.',
+                default: false,
+                optional: true,
+                additionalParams: true
+            },
+            {
                 label: 'Top Probability',
                 name: 'topP',
                 type: 'number',
@@ -216,13 +225,15 @@ class GoogleGenerativeAI_ChatModels implements INode {
         const cache = nodeData.inputs?.cache as BaseCache
         const streaming = nodeData.inputs?.streaming as boolean
         const baseUrl = nodeData.inputs?.baseUrl as string | undefined
+        const json = nodeData.inputs?.json as boolean
 
         const allowImageUploads = nodeData.inputs?.allowImageUploads as boolean
 
         const obj: GoogleGenerativeAIChatInput = {
             apiKey: apiKey,
             model: customModelName || modelName,
-            streaming: streaming ?? true
+            streaming: streaming ?? true,
+            json: json || false
         }
 
         // this extra metadata is needed, as langchain does not show the model name in the callbacks.
