@@ -362,8 +362,10 @@ class UpdateEventTool extends BaseGoogleCalendarTool {
         const params = { ...arg, ...this.defaultParams }
 
         try {
-            const updateData: any = {}
-
+            const getEndpoint = `calendars/${encodeURIComponent(params.calendarId)}/events/${encodeURIComponent(params.eventId)}`
+            const existingEventResponse = await this.makeGoogleCalendarRequest({ endpoint: getEndpoint, params })
+            const existingEventData = JSON.parse(existingEventResponse.split(TOOL_ARGS_PREFIX)[0])
+            const updateData: any = { ...existingEventData }
             if (params.summary) updateData.summary = params.summary
             if (params.description) updateData.description = params.description
             if (params.location) updateData.location = params.location
@@ -373,7 +375,7 @@ class UpdateEventTool extends BaseGoogleCalendarTool {
                 updateData.start = { date: params.startDate }
                 updateData.end = { date: params.endDate }
             } else if (params.startDateTime && params.endDateTime) {
-                const timezone = params.timeZone || 'UTC'
+                const timezone = params.timeZone || updateData.start?.timeZone || 'UTC'
                 console.info(`[UpdateEventTool] Using timezone: ${timezone} for event "${params.summary || params.eventId}"`)
                 updateData.start = {
                     dateTime: params.startDateTime,
@@ -382,6 +384,21 @@ class UpdateEventTool extends BaseGoogleCalendarTool {
                 updateData.end = {
                     dateTime: params.endDateTime,
                     timeZone: timezone
+                }
+            } else if (params.startDateTime || params.endDateTime) {
+                if (params.startDateTime) {
+                    const timezone = params.timeZone || updateData.start?.timeZone || 'UTC'
+                    updateData.start = {
+                        dateTime: params.startDateTime,
+                        timeZone: timezone
+                    }
+                }
+                if (params.endDateTime) {
+                    const timezone = params.timeZone || updateData.end?.timeZone || 'UTC'
+                    updateData.end = {
+                        dateTime: params.endDateTime,
+                        timeZone: timezone
+                    }
                 }
             }
 
@@ -408,6 +425,18 @@ class UpdateEventTool extends BaseGoogleCalendarTool {
             }
 
             if (params.visibility) updateData.visibility = params.visibility
+
+            // Remove fields that should not be updated
+            delete updateData.id
+            delete updateData.etag
+            delete updateData.created
+            delete updateData.updated
+            delete updateData.creator
+            delete updateData.organizer
+            delete updateData.htmlLink
+            delete updateData.iCalUID
+            delete updateData.sequence
+            delete updateData.kind
 
             const endpoint = `calendars/${encodeURIComponent(params.calendarId)}/events/${encodeURIComponent(params.eventId)}`
             const response = await this.makeGoogleCalendarRequest({ endpoint, method: 'PUT', body: updateData, params })
