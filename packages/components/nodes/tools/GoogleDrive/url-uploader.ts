@@ -1,26 +1,38 @@
 import { z } from 'zod'
 import fetch from 'node-fetch'
+import { randomUUID } from 'crypto'
+import sanitizeFilename from 'sanitize-filename'
+import { lookup } from 'mime-types'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
 import { BaseSmartGoogleDriveTool } from './smart-tools'
 import { findFolderByName, resolveFolderPath, checkFileExists, createFolderIfNotExists, createFolderPath } from './google-drive-utils'
 
 const URLFileUploaderSchema = z.object({
-    fileUrl: z.string().describe('URL of the file to download'),
+    fileUrl: z
+        .union([z.string().describe('URL of the file to download'), z.array(z.string()).describe('Array of URLs of files to download')])
+        .describe('URL(s) of the file(s) to download - can be a single URL string or array of URLs'),
     targetFolderName: z.string().describe('Name of the target folder'),
     targetFolderId: z.string().optional().describe('ID of the target folder (alternative to name)'),
-    fileName: z.string().optional().describe('Custom name for the file'),
+    fileName: z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .describe(
+            'Custom name(s) for the file(s) - can be a single string or array of strings corresponding to fileUrl array. If not provided or array is shorter than URLs, automatic names will be generated'
+        ),
     folderPath: z.string().optional().describe('Hierarchical folder path (e.g., "Projects/2024")'),
     overwriteExisting: z.boolean().optional().default(false).describe('Overwrite file if it already exists'),
     requireConfirmationToCreateFolder: z
         .boolean()
         .optional()
-        .default(true)
-        .describe('Require user confirmation before creating folders that do not exist'),
+        .default(false)
+        .describe(
+            'Require user confirmation before creating folders that do not exist (deprecated - folders are now created automatically)'
+        ),
     userConfirmedFolderCreation: z
         .boolean()
         .optional()
         .default(false)
-        .describe('User has confirmed folder creation (used internally after human input)')
+        .describe('User has confirmed folder creation (used internally after human input - deprecated)')
 })
 
 interface TwilioAuthConfig {
@@ -32,7 +44,6 @@ interface TwilioAuthConfig {
 }
 
 export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
-    protected accessToken: string = ''
     defaultParams: any
     private twilioCredentials: TwilioAuthConfig | null = null
     requiresHumanInput?: boolean
@@ -41,7 +52,7 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
         const toolInput = {
             name: 'url_file_uploader',
             description:
-                'Downloads files from URLs (especially Twilio) and uploads them to Google Drive with intelligent folder search. Can request user confirmation before creating new folders.',
+                'Downloads single or multiple files from URLs (especially Twilio) and uploads them to Google Drive with intelligent folder search. Supports batch processing with detailed success/failure reporting. Automatically creates folders if they do not exist and provides detailed location information including folder ID and path.',
             schema: URLFileUploaderSchema,
             baseUrl: '',
             method: 'POST',
@@ -51,27 +62,62 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
             ...toolInput,
             accessToken: args.accessToken
         })
-        this.accessToken = args.accessToken ?? ''
+
         this.defaultParams = args.defaultParams || {}
         this.twilioCredentials = args.twilioCredentials || null
+    }
+
+    /**
+     * Check if the given folder name or path refers to the root directory
+     */
+    private isRootFolder(folderNameOrPath: string): boolean {
+        if (!folderNameOrPath || typeof folderNameOrPath !== 'string') {
+            return false
+        }
+
+        const normalized = folderNameOrPath.trim().toLowerCase()
+        const rootVariations = ['root', 'my drive', 'mydrive', '/', '', 'drive', 'google drive', 'googledrive']
+        return rootVariations.includes(normalized)
     }
 
     async _call(arg: any): Promise<string> {
         const params = { ...arg, ...this.defaultParams }
 
         try {
-            const { accountSid, authToken } = this.twilioCredentials || {}
+            const rawUrls = Array.isArray(params.fileUrl) ? params.fileUrl : [params.fileUrl]
+            const urlValidationResult = this.validateAndDeduplicateUrls(rawUrls)
+            if (urlValidationResult.validUrls.length === 0) {
+                const result = {
+                    success: false,
+                    error: 'ALL_URLS_INVALID',
+                    message: 'No valid URLs found to process',
+                    invalidUrls: urlValidationResult.invalidUrls,
+                    details: 'All provided URLs failed validation. Please check the URLs and try again.'
+                }
+                return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+            }
 
-            if (this.isTwilioURL(params.fileUrl) && !(accountSid && authToken)) {
+            const fileUrls = urlValidationResult.validUrls
+            let fileNames: string[] = []
+            if (params.fileName) {
+                fileNames = Array.isArray(params.fileName) ? params.fileName : [params.fileName]
+            }
+
+            while (fileNames.length < fileUrls.length) {
+                fileNames.push('')
+            }
+
+            const { accountSid, authToken } = this.twilioCredentials || {}
+            const hasTwilioUrls = fileUrls.some((url: string) => this.isTwilioURL(url))
+            if (hasTwilioUrls && !(accountSid && authToken)) {
                 const result = {
                     success: false,
                     error: 'TWILIO_CREDENTIALS_MISSING',
                     message: 'Twilio credentials are required for Twilio URLs. Please configure Twilio API credentials in Flowise.',
                     debug: {
-                        url: params.fileUrl,
-                        isTwilioURL: this.isTwilioURL(params.fileUrl),
+                        urls: fileUrls,
+                        twilioUrls: fileUrls.filter((url: string) => this.isTwilioURL(url)),
                         twilioCredentialsPresent: !!this.twilioCredentials,
-                        twilioAuthPresent: !!params.twilioAuth,
                         defaultParams: this.defaultParams
                     }
                 }
@@ -93,85 +139,200 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
                     }
                 }
 
-                // If folder is not found, check if we need confirmation
                 if (!targetFolderId) {
-                    if (params.requireConfirmationToCreateFolder && !params.userConfirmedFolderCreation) {
-                        this.requiresHumanInput = true
-                        const folderToCreate = params.targetFolderName || params.folderPath
-                        const result = {
-                            success: false,
-                            error: 'FOLDER_NOT_FOUND_REQUIRES_CONFIRMATION',
-                            targetFolder: folderToCreate,
-                            message: `Folder "${folderToCreate}" not found. Would you like me to create it before uploading the file?`,
-                            requiresUserConfirmation: true,
-                            confirmationPrompt: `The folder "${folderToCreate}" does not exist. Would you like me to create it before uploading the file?`,
-                            nextAction: {
-                                tool: 'url_file_uploader',
-                                params: {
-                                    ...params,
-                                    userConfirmedFolderCreation: true
-                                }
+                    const folderToCreate = params.targetFolderName || params.folderPath
+                    let createdFolderInfo = null
+
+                    if (params.targetFolderName && this.isRootFolder(params.targetFolderName)) {
+                        targetFolderId = 'root'
+                        createdFolderInfo = {
+                            type: 'root',
+                            name: 'My Drive (Root)',
+                            id: 'root',
+                            wasExisting: true
+                        }
+                    } else if (params.folderPath && this.isRootFolder(params.folderPath)) {
+                        targetFolderId = 'root'
+                        createdFolderInfo = {
+                            type: 'root',
+                            path: 'My Drive (Root)',
+                            id: 'root',
+                            wasExisting: true
+                        }
+                    } else if (params.folderPath) {
+                        targetFolderId = await createFolderPath(this.accessToken, params.folderPath)
+                        if (targetFolderId) {
+                            createdFolderInfo = {
+                                type: 'path',
+                                path: params.folderPath,
+                                id: targetFolderId,
+                                wasExisting: false
                             }
                         }
-
-                        return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
-                    }
-
-                    if (params.folderPath) {
-                        targetFolderId = await createFolderPath(this.accessToken, params.folderPath)
                     } else if (params.targetFolderName) {
                         targetFolderId = await createFolderIfNotExists(this.accessToken, params.targetFolderName)
+                        if (targetFolderId) {
+                            createdFolderInfo = {
+                                type: 'folder',
+                                name: params.targetFolderName,
+                                id: targetFolderId,
+                                wasExisting: false
+                            }
+                        }
                     }
 
                     if (!targetFolderId) {
                         const result = {
                             success: false,
-                            targetFolder: params.targetFolderName || params.folderPath,
-                            error: 'FOLDER_NOT_FOUND_AND_CREATION_FAILED',
-                            message: `Could not find or create folder: ${params.targetFolderName || params.folderPath}`
+                            targetFolder: folderToCreate,
+                            error: 'FOLDER_CREATION_FAILED',
+                            message: `Could not create folder: ${folderToCreate}. Please check permissions and try again.`
                         }
 
                         return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
                     }
+
+                    // Store folder creation info for later use in the response
+                    params._createdFolderInfo = createdFolderInfo
                 }
             }
 
-            const downloadResult = await this.downloadFromURL(params.fileUrl, this.twilioCredentials || undefined)
-            if (!downloadResult.success) {
-                return JSON.stringify(downloadResult) + TOOL_ARGS_PREFIX + JSON.stringify(params)
-            }
+            const successfulUploads: any[] = []
+            const failedUploads: any[] = []
+            const usedFileNames = new Set<string>()
 
-            const fileName = params.fileName || this.extractFileNameFromURL(params.fileUrl) || `downloaded_file_${Date.now()}`
-            const mimeType = this.detectMimeType(downloadResult.buffer, fileName)
-            if (!params.overwriteExisting) {
-                const existingFile = await checkFileExists(this.accessToken, fileName, targetFolderId)
-                if (existingFile) {
-                    const result = {
-                        success: false,
-                        existingFileId: existingFile.id,
-                        fileName: fileName,
-                        error: 'FILE_EXISTS'
+            for (let i = 0; i < fileUrls.length; i++) {
+                const fileUrl = fileUrls[i]
+                try {
+                    let fileName: string
+                    if (fileNames[i]) {
+                        const sanitized = sanitizeFilename(fileNames[i].trim())
+                        fileName = sanitized || `custom_file_${Date.now()}_${i}`
+                    } else {
+                        const extractedName = this.extractFileNameFromURL(fileUrl)
+                        fileName = extractedName || `downloaded_file_${Date.now()}_${i}`
                     }
-                    return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+
+                    fileName = this.ensureUniqueFileName(fileName, usedFileNames)
+                    usedFileNames.add(fileName)
+                    const downloadResult = await this.downloadFromURL(fileUrl, this.twilioCredentials || undefined)
+                    if (!downloadResult.success) {
+                        failedUploads.push({
+                            url: fileUrl,
+                            fileName: fileName,
+                            error: downloadResult.error,
+                            details: downloadResult.details || downloadResult.message,
+                            stage: 'download'
+                        })
+
+                        continue
+                    }
+
+                    const mimeType = this.detectMimeType(downloadResult.buffer, fileName)
+                    if (!params.overwriteExisting) {
+                        const existingFile = await checkFileExists(this.accessToken, fileName, targetFolderId)
+                        if (existingFile) {
+                            failedUploads.push({
+                                url: fileUrl,
+                                fileName: fileName,
+                                error: 'FILE_EXISTS',
+                                details: `File already exists with ID: ${existingFile.id}`,
+                                existingFileId: existingFile.id,
+                                stage: 'upload'
+                            })
+
+                            continue
+                        }
+                    }
+
+                    const uploadResult = await this.uploadToGoogleDrive({
+                        fileName,
+                        fileContent: downloadResult.buffer,
+                        mimeType,
+                        parentFolderId: targetFolderId
+                    })
+
+                    successfulUploads.push({
+                        url: fileUrl,
+                        fileId: uploadResult.id,
+                        fileName: fileName,
+                        fileSize: downloadResult.size,
+                        mimeType: mimeType,
+                        webViewLink: uploadResult.webViewLink,
+                        downloadUrl: `https://drive.google.com/uc?id=${uploadResult.id}&export=download`
+                    })
+                } catch (error) {
+                    const fileName = fileNames[i] || this.extractFileNameFromURL(fileUrl) || `file_${i}`
+                    failedUploads.push({
+                        url: fileUrl,
+                        fileName: fileName,
+                        error: error instanceof Error ? error.message : String(error),
+                        errorType: error instanceof Error ? error.constructor.name : 'UnknownError',
+                        stage: 'processing'
+                    })
                 }
             }
 
-            const uploadResult = await this.uploadToGoogleDrive({
-                fileName,
-                fileContent: downloadResult.buffer,
-                mimeType,
-                parentFolderId: targetFolderId
-            })
+            let folderInfo = {
+                id: targetFolderId,
+                name: params.targetFolderName || 'Unknown',
+                path: params.folderPath || 'Unknown',
+                webViewLink: `https://drive.google.com/drive/folders/${targetFolderId}`,
+                wasCreated: false,
+                type: 'folder'
+            }
+
+            if (params._createdFolderInfo) {
+                const creationInfo = params._createdFolderInfo
+                folderInfo = {
+                    id: creationInfo.id,
+                    name: creationInfo.name || creationInfo.path || params.targetFolderName || 'Unknown',
+                    path: creationInfo.path || creationInfo.name || params.folderPath || 'Unknown',
+                    webViewLink: `https://drive.google.com/drive/folders/${creationInfo.id}`,
+                    wasCreated: !creationInfo.wasExisting,
+                    type: creationInfo.type
+                }
+            }
 
             const result = {
-                success: true,
-                fileId: uploadResult.id,
-                fileName: fileName,
-                fileSize: downloadResult.size,
-                mimeType: mimeType,
-                targetFolderId: targetFolderId,
-                webViewLink: uploadResult.webViewLink,
-                downloadUrl: `https://drive.google.com/uc?id=${uploadResult.id}&export=download`
+                success: successfulUploads.length > 0,
+                totalFiles: fileUrls.length,
+                successfulUploads: successfulUploads.length,
+                failedUploads: failedUploads.length,
+                targetFolder: folderInfo,
+                targetFolderId: targetFolderId, // Keep for backward compatibility
+                uploads: successfulUploads,
+                failures: failedUploads,
+                summary: `Successfully uploaded ${successfulUploads.length} of ${fileUrls.length} files to Google Drive folder "${folderInfo.name}" (ID: ${folderInfo.id})`,
+                processingInfo: {
+                    totalProcessed: fileUrls.length,
+                    successRate: Math.round((successfulUploads.length / fileUrls.length) * 100),
+                    totalSizeUploaded: successfulUploads.reduce((sum, upload) => sum + (upload.fileSize || 0), 0),
+                    averageFileSize:
+                        successfulUploads.length > 0
+                            ? Math.round(
+                                  successfulUploads.reduce((sum, upload) => sum + (upload.fileSize || 0), 0) / successfulUploads.length
+                              )
+                            : 0,
+                    folderLocation: {
+                        id: folderInfo.id,
+                        name: folderInfo.name,
+                        path: folderInfo.path,
+                        webViewLink: folderInfo.webViewLink,
+                        wasCreated: folderInfo.wasCreated || false
+                    }
+                },
+                ...(urlValidationResult.invalidUrls.length > 0 || urlValidationResult.duplicateUrls.length > 0
+                    ? {
+                          urlValidation: {
+                              message: urlValidationResult.message,
+                              invalidUrls: urlValidationResult.invalidUrls,
+                              duplicateUrls: urlValidationResult.duplicateUrls,
+                              originalUrlCount: rawUrls.length,
+                              validUrlCount: fileUrls.length
+                          }
+                      }
+                    : {})
             }
 
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
@@ -180,7 +341,6 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
                 success: false,
                 error: error instanceof Error ? error.message : String(error),
                 errorType: error instanceof Error ? error.constructor.name : 'UnknownError',
-                url: params.fileUrl,
                 timestamp: new Date().toISOString()
             }
 
@@ -308,44 +468,103 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
     }
 
     private detectMimeType(buffer: Buffer, fileName: string): string {
-        const extension = fileName.split('.').pop()?.toLowerCase()
-        if (buffer.length >= 4) {
-            const signature = buffer.toString('hex', 0, 4)
-
-            switch (signature) {
-                case '89504e47':
-                    return 'image/png'
-                case 'ffd8ffe0':
-                case 'ffd8ffe1':
-                case 'ffd8ffe2':
-                    return 'image/jpeg'
-                case '47494638':
-                    return 'image/gif'
-                case '25504446':
-                    return 'application/pdf'
-                case '504b0304':
-                    return 'application/zip'
-            }
+        const mimeType = lookup(fileName)
+        if (mimeType) {
+            return mimeType
         }
 
+        const extension = fileName.split('.').pop()?.toLowerCase()
         const mimeTypes: { [key: string]: string } = {
+            // Images
             jpg: 'image/jpeg',
             jpeg: 'image/jpeg',
             png: 'image/png',
             gif: 'image/gif',
+            webp: 'image/webp',
+            bmp: 'image/bmp',
+            svg: 'image/svg+xml',
+
+            // Documents
             pdf: 'application/pdf',
             txt: 'text/plain',
             doc: 'application/msword',
             docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             xls: 'application/vnd.ms-excel',
             xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ppt: 'application/vnd.ms-powerpoint',
+            pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+
+            // Audio/Video
             mp3: 'audio/mpeg',
-            mp4: 'video/mp4',
             wav: 'audio/wav',
-            zip: 'application/zip'
+            mp4: 'video/mp4',
+            avi: 'video/x-msvideo',
+
+            // Archives
+            zip: 'application/zip',
+            rar: 'application/x-rar-compressed',
+
+            // Web
+            html: 'text/html',
+            css: 'text/css',
+            js: 'application/javascript',
+            json: 'application/json'
         }
 
         return extension && mimeTypes[extension] ? mimeTypes[extension] : 'application/octet-stream'
+    }
+
+    private ensureUniqueFileName(fileName: string, usedNames: Set<string>): string {
+        if (!usedNames.has(fileName)) {
+            return fileName
+        }
+
+        const lastDotIndex = fileName.lastIndexOf('.')
+        const baseName = lastDotIndex > 0 ? fileName.substring(0, lastDotIndex) : fileName
+        const extension = lastDotIndex > 0 ? fileName.substring(lastDotIndex) : ''
+        const uniqueId = randomUUID().substring(0, 8) // Use first 8 characters of UUID
+        return `${baseName}_${uniqueId}${extension}`
+    }
+
+    private validateAndDeduplicateUrls(urls: string[]): {
+        success: boolean
+        validUrls: string[]
+        invalidUrls: string[]
+        duplicateUrls: string[]
+        message?: string
+    } {
+        const cleanUrls = urls.filter((url) => url && typeof url === 'string' && url.trim() !== '').map((url) => url.trim())
+        const uniqueUrls = [...new Set(cleanUrls)]
+        const duplicateUrls = cleanUrls.filter((url, index) => cleanUrls.indexOf(url) !== index)
+        const validUrls = uniqueUrls.filter((url) => this.isValidUrl(url))
+        const invalidUrls = uniqueUrls.filter((url) => !this.isValidUrl(url))
+        const success = validUrls.length > 0
+        let message = ''
+        if (!success) {
+            message = 'No valid URLs found'
+        } else if (invalidUrls.length > 0 || duplicateUrls.length > 0) {
+            const issues = []
+            if (invalidUrls.length > 0) issues.push(`${invalidUrls.length} invalid`)
+            if (duplicateUrls.length > 0) issues.push(`${duplicateUrls.length} duplicates`)
+            message = `Found ${validUrls.length} valid URLs. Skipped: ${issues.join(', ')}`
+        }
+
+        return {
+            success,
+            validUrls,
+            invalidUrls,
+            duplicateUrls,
+            message
+        }
+    }
+
+    private isValidUrl(url: string): boolean {
+        try {
+            const urlObj = new URL(url)
+            return ['http:', 'https:'].includes(urlObj.protocol) && urlObj.hostname.length > 0
+        } catch {
+            return false
+        }
     }
 
     private isTwilioURL(url: string): boolean {
