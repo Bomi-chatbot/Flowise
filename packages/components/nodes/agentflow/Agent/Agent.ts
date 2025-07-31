@@ -1453,6 +1453,7 @@ class Agent_Agentflow implements INode {
                     (selectedTool as any).requiresHumanInput && (!iterationContext || Object.keys(iterationContext).length === 0)
 
                 const flowConfig = {
+                    chatflowId: options.chatflowid,
                     sessionId: options.sessionId,
                     chatId: options.chatId,
                     input: input,
@@ -1733,6 +1734,7 @@ class Agent_Agentflow implements INode {
                 let parsedArtifacts
 
                 const flowConfig = {
+                    chatflowId: options.chatflowid,
                     sessionId: options.sessionId,
                     chatId: options.chatId,
                     input: input,
