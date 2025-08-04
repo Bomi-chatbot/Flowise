@@ -304,19 +304,34 @@ class GoogleSheets_Tools implements INode {
                 },
                 additionalParams: true,
                 optional: true
+            },
+            {
+                label: 'Access Token Override',
+                name: 'accessToken',
+                type: 'string',
+                description:
+                    'You can override the access token per request using overrideConfig.vars.access_token in the API call. This allows multiple users to use their own Google Sheets access tokens.',
+                placeholder: 'access token value',
+                optional: true,
+                additionalParams: true
             }
         ]
     }
 
     async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         const sheetsType = nodeData.inputs?.sheetsType as string
-
-        let credentialData = await getCredentialData(nodeData.credential ?? '', options)
-        credentialData = await refreshOAuth2Token(nodeData.credential ?? '', credentialData, options)
-        const accessToken = getCredentialParam('access_token', credentialData, nodeData)
+        let accessToken: string
+        const overrideAccessToken = nodeData.inputs?.vars?.access_token || nodeData.inputs?.access_token || nodeData.inputs?.accessToken
+        if (overrideAccessToken) {
+            accessToken = overrideAccessToken
+        } else {
+            let credentialData = await getCredentialData(nodeData.credential ?? '', options)
+            credentialData = await refreshOAuth2Token(nodeData.credential ?? '', credentialData, options)
+            accessToken = getCredentialParam('access_token', credentialData, nodeData)
+        }
 
         if (!accessToken) {
-            throw new Error('No access token found in credential')
+            throw new Error('No access token found in Google Sheets credential')
         }
 
         // Get all actions based on type
@@ -342,6 +357,9 @@ class GoogleSheets_Tools implements INode {
     transformNodeInputsToToolArgs(nodeData: INodeData): Record<string, any> {
         // Collect default parameters from inputs
         const defaultParams: Record<string, any> = {}
+
+        // Access token
+        if (nodeData.inputs?.accessToken) defaultParams.accessToken = nodeData.inputs.accessToken
 
         // Common parameters
         if (nodeData.inputs?.spreadsheetId) defaultParams.spreadsheetId = nodeData.inputs.spreadsheetId
