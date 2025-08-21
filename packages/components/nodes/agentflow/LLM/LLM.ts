@@ -449,7 +449,7 @@ class LLM_Agentflow implements INode {
             delete nodeData.inputs?.llmMessages
 
             // Configure structured output if specified
-            const isStructuredOutput = !!_llmStructuredOutput && Array.isArray(_llmStructuredOutput) && _llmStructuredOutput.length > 0
+            const isStructuredOutput = _llmStructuredOutput && Array.isArray(_llmStructuredOutput) && _llmStructuredOutput.length > 0
             if (isStructuredOutput) {
                 llmNodeInstance = this.configureStructuredOutput(llmNodeInstance, _llmStructuredOutput)
             }
@@ -509,16 +509,14 @@ class LLM_Agentflow implements INode {
 
             // Prepare final response and output object
             let finalResponse = ''
-            if (isStructuredOutput) {
-                finalResponse = JSON.stringify(response, null, 2)
-            } else if (response.content && Array.isArray(response.content)) {
+            if (response.content && Array.isArray(response.content)) {
                 finalResponse = response.content.map((item: any) => item.text).join('\n')
             } else if (response.content && typeof response.content === 'string') {
                 finalResponse = response.content
             } else {
                 finalResponse = JSON.stringify(response, null, 2)
             }
-            const output = this.prepareOutputObject(response, finalResponse, startTime, endTime, timeDelta, isStructuredOutput, messages)
+            const output = this.prepareOutputObject(response, finalResponse, startTime, endTime, timeDelta, isStructuredOutput)
 
             // End analytics tracking
             if (analyticHandlers && llmIds) {
@@ -873,7 +871,6 @@ class LLM_Agentflow implements INode {
             const responseContents = response.content as MessageContentText[]
             response.content = responseContents.map((item) => item.text).join('')
         }
-
         return response
     }
 
@@ -886,8 +883,7 @@ class LLM_Agentflow implements INode {
         startTime: number,
         endTime: number,
         timeDelta: number,
-        isStructuredOutput: boolean,
-        messages: BaseMessageLike[]
+        isStructuredOutput: boolean
     ): any {
         const output: any = {
             content: finalResponse,
@@ -902,42 +898,8 @@ class LLM_Agentflow implements INode {
             output.calledTools = response.tool_calls
         }
 
-        let totalTokens = response.usage_metadata?.total_tokens || 0
-        let promptTokens = response.usage_metadata?.input_tokens || 0
-        let completionTokens = response.usage_metadata?.output_tokens || 0
-
-        if (isStructuredOutput && !response.usage_metadata) {
-            completionTokens = Math.ceil(finalResponse.length / 4)
-            const messagesText = messages
-                .map((msg: any) => {
-                    if (typeof msg === 'string') {
-                        return msg
-                    }
-                    if (typeof msg.content === 'string') {
-                        return msg.content
-                    } else if (Array.isArray(msg.content)) {
-                        return msg.content
-                            .map((item: any) =>
-                                typeof item === 'string' ? item : typeof item === 'object' && 'text' in item ? item.text : ''
-                            )
-                            .join(' ')
-                    }
-                    return ''
-                })
-                .join(' ')
-
-            promptTokens = Math.ceil(messagesText.length / 4)
-            totalTokens = promptTokens + completionTokens
-        }
-
         if (response.usage_metadata) {
             output.usageMetadata = response.usage_metadata
-        } else if (isStructuredOutput && totalTokens > 0) {
-            output.usageMetadata = {
-                total_tokens: totalTokens,
-                input_tokens: promptTokens,
-                output_tokens: completionTokens
-            }
         }
 
         if (isStructuredOutput && typeof response === 'object') {
