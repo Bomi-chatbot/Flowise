@@ -816,7 +816,11 @@ class Agent_Agentflow implements INode {
                 const role = msg.role
                 const content = msg.content
                 if (role && content) {
-                    messages.push({ role, content })
+                    if (role === 'system') {
+                        messages.unshift({ role, content })
+                    } else {
+                        messages.push({ role, content })
+                    }
                 }
             }
 
