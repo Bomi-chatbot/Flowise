@@ -6,6 +6,7 @@ import { SmartFolderFinderTool, HierarchicalFolderNavigatorTool } from './smart-
 import { URLFileUploaderTool } from './url-uploader'
 import { SmartFolderCreatorTool } from './smart-folder-creator'
 import { SmartFileUrlTool } from './smart-file-url'
+import { handleGoogleAPIResponse } from '../shared/access-control-utils'
 
 export const desc = `Use this when you want to access Google Drive API for managing files and folders`
 
@@ -15,6 +16,11 @@ export interface Headers {
 
 export interface Body {
     [key: string]: any
+}
+
+export interface AccessControlContext {
+    sessionId?: string
+    accessToken?: string
 }
 
 export interface RequestParameters {
@@ -27,6 +33,7 @@ export interface RequestParameters {
     accessToken?: string
     defaultParams?: any
     twilioCredentials?: any
+    accessControlContext?: AccessControlContext
 }
 
 // Define schemas for different Google Drive operations
@@ -122,10 +129,15 @@ const ShareFileSchema = z.object({
 
 class BaseGoogleDriveTool extends DynamicStructuredTool {
     protected accessToken: string = ''
+    protected accessControlContext?: AccessControlContext
 
     constructor(args: any) {
         super(args)
         this.accessToken = args.accessToken ?? ''
+        this.accessControlContext = {
+            ...args.accessControlContext,
+            accessToken: this.accessToken
+        }
     }
 
     async makeGoogleDriveRequest({
@@ -160,7 +172,16 @@ class BaseGoogleDriveTool extends DynamicStructuredTool {
 
         if (!response.ok) {
             const errorText = await response.text()
-            throw new Error(`Google Drive API Error ${response.status}: ${response.statusText} - ${errorText}`)
+            let errorResponse = null
+
+            try {
+                errorResponse = JSON.parse(errorText)
+            } catch (parseError) {
+                // Not JSON, continue with text error
+            }
+
+            const error = new Error(`Google Drive API Error ${response.status}: ${response.statusText} - ${errorText}`)
+            return await handleGoogleAPIResponse(error, response.status, params, this.accessControlContext, errorResponse)
         }
 
         const data = await response.text()
@@ -183,7 +204,8 @@ class ListFilesTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -226,7 +248,8 @@ class GetFileTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -264,7 +287,8 @@ class CreateFileTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -428,7 +452,8 @@ class UpdateFileTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -476,7 +501,8 @@ class DeleteFileTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -516,7 +542,8 @@ class CopyFileTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -565,7 +592,8 @@ class DownloadFileTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -603,7 +631,8 @@ class CreateFolderTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -654,7 +683,8 @@ class SearchFilesTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -695,7 +725,8 @@ class ShareFileTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -757,7 +788,8 @@ class ListFolderContentsTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -804,7 +836,8 @@ class DeleteFolderTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -850,7 +883,8 @@ class GetPermissionsTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -893,7 +927,8 @@ class RemovePermissionTool extends BaseGoogleDriveTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -927,82 +962,84 @@ export const createGoogleDriveTools = (args?: RequestParameters): DynamicStructu
     const accessToken = args?.accessToken || ''
     const defaultParams = args?.defaultParams || {}
     const twilioCredentials = args?.twilioCredentials
+    const accessControlContext = args?.accessControlContext
+    const toolArgs = { accessToken, defaultParams, accessControlContext }
 
     if (actions.includes('listFiles')) {
-        tools.push(new ListFilesTool({ accessToken, defaultParams }))
+        tools.push(new ListFilesTool(toolArgs))
     }
 
     if (actions.includes('getFile')) {
-        tools.push(new GetFileTool({ accessToken, defaultParams }))
+        tools.push(new GetFileTool(toolArgs))
     }
 
     if (actions.includes('createFile')) {
-        tools.push(new CreateFileTool({ accessToken, defaultParams }))
+        tools.push(new CreateFileTool(toolArgs))
     }
 
     if (actions.includes('updateFile')) {
-        tools.push(new UpdateFileTool({ accessToken, defaultParams }))
+        tools.push(new UpdateFileTool(toolArgs))
     }
 
     if (actions.includes('deleteFile')) {
-        tools.push(new DeleteFileTool({ accessToken, defaultParams }))
+        tools.push(new DeleteFileTool(toolArgs))
     }
 
     if (actions.includes('copyFile')) {
-        tools.push(new CopyFileTool({ accessToken, defaultParams }))
+        tools.push(new CopyFileTool(toolArgs))
     }
 
     if (actions.includes('downloadFile')) {
-        tools.push(new DownloadFileTool({ accessToken, defaultParams }))
+        tools.push(new DownloadFileTool(toolArgs))
     }
 
     if (actions.includes('createFolder')) {
-        tools.push(new CreateFolderTool({ accessToken, defaultParams }))
+        tools.push(new CreateFolderTool(toolArgs))
     }
 
     if (actions.includes('listFolderContents')) {
-        tools.push(new ListFolderContentsTool({ accessToken, defaultParams }))
+        tools.push(new ListFolderContentsTool(toolArgs))
     }
 
     if (actions.includes('deleteFolder')) {
-        tools.push(new DeleteFolderTool({ accessToken, defaultParams }))
+        tools.push(new DeleteFolderTool(toolArgs))
     }
 
     if (actions.includes('searchFiles')) {
-        tools.push(new SearchFilesTool({ accessToken, defaultParams }))
+        tools.push(new SearchFilesTool(toolArgs))
     }
 
     if (actions.includes('shareFile')) {
-        tools.push(new ShareFileTool({ accessToken, defaultParams }))
+        tools.push(new ShareFileTool(toolArgs))
     }
 
     if (actions.includes('getPermissions')) {
-        tools.push(new GetPermissionsTool({ accessToken, defaultParams }))
+        tools.push(new GetPermissionsTool(toolArgs))
     }
 
     if (actions.includes('removePermission')) {
-        tools.push(new RemovePermissionTool({ accessToken, defaultParams }))
+        tools.push(new RemovePermissionTool(toolArgs))
     }
 
     // Smart tools
     if (actions.includes('smartFolderFinder')) {
-        tools.push(new SmartFolderFinderTool({ accessToken, defaultParams }))
+        tools.push(new SmartFolderFinderTool(toolArgs))
     }
 
     if (actions.includes('hierarchicalFolderNavigator')) {
-        tools.push(new HierarchicalFolderNavigatorTool({ accessToken, defaultParams }))
+        tools.push(new HierarchicalFolderNavigatorTool(toolArgs))
     }
 
     if (actions.includes('urlFileUploader')) {
-        tools.push(new URLFileUploaderTool({ accessToken, defaultParams, twilioCredentials }))
+        tools.push(new URLFileUploaderTool({ ...toolArgs, twilioCredentials }))
     }
 
     if (actions.includes('smartFolderCreator')) {
-        tools.push(new SmartFolderCreatorTool({ accessToken, defaultParams }))
+        tools.push(new SmartFolderCreatorTool(toolArgs))
     }
 
     if (actions.includes('smartFileUrl')) {
-        tools.push(new SmartFileUrlTool({ accessToken, defaultParams }))
+        tools.push(new SmartFileUrlTool(toolArgs))
     }
 
     return tools
