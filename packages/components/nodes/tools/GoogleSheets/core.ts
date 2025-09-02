@@ -2,6 +2,7 @@ import { z } from 'zod'
 import fetch from 'node-fetch'
 import { DynamicStructuredTool } from '../OpenAPIToolkit/core'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
+import { handleGoogleAPIResponse } from '../shared/access-control-utils'
 
 export const desc = `Use this when you want to access Google Sheets API for managing spreadsheets and values`
 
@@ -13,6 +14,11 @@ export interface Body {
     [key: string]: any
 }
 
+export interface AccessControlContext {
+    sessionId?: string
+    accessToken?: string
+}
+
 export interface RequestParameters {
     headers?: Headers
     body?: Body
@@ -22,6 +28,7 @@ export interface RequestParameters {
     actions?: string[]
     accessToken?: string
     defaultParams?: any
+    accessControlContext?: AccessControlContext
 }
 
 // Define schemas for different Google Sheets operations
@@ -118,10 +125,15 @@ const BatchClearValuesSchema = z.object({
 
 class BaseGoogleSheetsTool extends DynamicStructuredTool {
     protected accessToken: string = ''
+    protected accessControlContext?: AccessControlContext
 
     constructor(args: any) {
         super(args)
         this.accessToken = args.accessToken ?? ''
+        this.accessControlContext = {
+            ...args.accessControlContext,
+            accessToken: this.accessToken
+        }
     }
 
     async makeGoogleSheetsRequest({
@@ -152,7 +164,17 @@ class BaseGoogleSheetsTool extends DynamicStructuredTool {
 
         if (!response.ok) {
             const errorText = await response.text()
-            throw new Error(`Google Sheets API Error ${response.status}: ${response.statusText} - ${errorText}`)
+            let errorResponse = null
+
+            try {
+                errorResponse = JSON.parse(errorText)
+            } catch (parseError) {
+                // Not JSON, continue with text error
+            }
+
+            const error = new Error(`Google Sheets API Error ${response.status}: ${response.statusText} - ${errorText}`)
+
+            return await handleGoogleAPIResponse(error, response.status, params, this.accessControlContext, errorResponse)
         }
 
         const data = await response.text()
@@ -175,8 +197,10 @@ class CreateSpreadsheetTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
+
         this.defaultParams = args.defaultParams || {}
     }
 
@@ -227,7 +251,8 @@ class GetSpreadsheetTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -268,7 +293,8 @@ class UpdateSpreadsheetTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -317,7 +343,8 @@ class GetValuesTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -356,7 +383,8 @@ class UpdateValuesTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -367,8 +395,27 @@ class UpdateValuesTool extends BaseGoogleSheetsTool {
         let values
         try {
             values = JSON.parse(params.values)
+            if (!Array.isArray(values)) {
+                return JSON.stringify({
+                    error: true,
+                    type: 'validation_error',
+                    message: `Values must be a valid JSON array, received: ${typeof values}`,
+                    details: {
+                        received: params.values,
+                        expectedType: 'array'
+                    }
+                })
+            }
         } catch (error) {
-            throw new Error('Values must be a valid JSON array')
+            return JSON.stringify({
+                error: true,
+                type: 'json_parsing_error',
+                message: `Values must be a valid JSON array. JSON parsing failed: ${error.message}`,
+                details: {
+                    received: params.values,
+                    parseError: error.message
+                }
+            })
         }
 
         const body = {
@@ -405,7 +452,8 @@ class AppendValuesTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -416,8 +464,27 @@ class AppendValuesTool extends BaseGoogleSheetsTool {
         let values
         try {
             values = JSON.parse(params.values)
+            if (!Array.isArray(values)) {
+                return JSON.stringify({
+                    error: true,
+                    type: 'validation_error',
+                    message: `Values must be a valid JSON array, received: ${typeof values}`,
+                    details: {
+                        received: params.values,
+                        expectedType: 'array'
+                    }
+                })
+            }
         } catch (error) {
-            throw new Error('Values must be a valid JSON array')
+            return JSON.stringify({
+                error: true,
+                type: 'json_parsing_error',
+                message: `Values must be a valid JSON array. JSON parsing failed: ${error.message}`,
+                details: {
+                    received: params.values,
+                    parseError: error.message
+                }
+            })
         }
 
         const body = {
@@ -455,7 +522,8 @@ class ClearValuesTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -489,7 +557,8 @@ class BatchGetValuesTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -531,7 +600,8 @@ class BatchUpdateValuesTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -542,8 +612,27 @@ class BatchUpdateValuesTool extends BaseGoogleSheetsTool {
         let valueRanges
         try {
             valueRanges = JSON.parse(params.values)
+            if (!Array.isArray(valueRanges)) {
+                return JSON.stringify({
+                    error: true,
+                    type: 'validation_error',
+                    message: `Values must be a valid JSON array of value ranges, received: ${typeof valueRanges}`,
+                    details: {
+                        received: params.values,
+                        expectedType: 'array'
+                    }
+                })
+            }
         } catch (error) {
-            throw new Error('Values must be a valid JSON array of value ranges')
+            return JSON.stringify({
+                error: true,
+                type: 'json_parsing_error',
+                message: `Values must be a valid JSON array of value ranges. JSON parsing failed: ${error.message}`,
+                details: {
+                    received: params.values,
+                    parseError: error.message
+                }
+            })
         }
 
         const body = {
@@ -577,7 +666,8 @@ class BatchClearValuesTool extends BaseGoogleSheetsTool {
         }
         super({
             ...toolInput,
-            accessToken: args.accessToken
+            accessToken: args.accessToken,
+            accessControlContext: args.accessControlContext
         })
         this.defaultParams = args.defaultParams || {}
     }
@@ -600,16 +690,13 @@ class BatchClearValuesTool extends BaseGoogleSheetsTool {
 }
 
 export const createGoogleSheetsTools = (args?: RequestParameters): DynamicStructuredTool[] => {
-    const { actions = [], accessToken, defaultParams } = args || {}
+    const { actions = [], accessToken, defaultParams, accessControlContext } = args || {}
     const tools: DynamicStructuredTool[] = []
-
-    // Define all available tools
+    const toolArgs = { accessToken, defaultParams, accessControlContext }
     const toolClasses = {
-        // Spreadsheet tools
         createSpreadsheet: CreateSpreadsheetTool,
         getSpreadsheet: GetSpreadsheetTool,
         updateSpreadsheet: UpdateSpreadsheetTool,
-        // Values tools
         getValues: GetValuesTool,
         updateValues: UpdateValuesTool,
         appendValues: AppendValuesTool,
@@ -619,11 +706,10 @@ export const createGoogleSheetsTools = (args?: RequestParameters): DynamicStruct
         batchClearValues: BatchClearValuesTool
     }
 
-    // Create tools based on requested actions
     actions.forEach((action) => {
         const ToolClass = toolClasses[action as keyof typeof toolClasses]
         if (ToolClass) {
-            tools.push(new ToolClass({ accessToken, defaultParams }))
+            tools.push(new ToolClass(toolArgs))
         }
     })
 
