@@ -1,5 +1,6 @@
 import fetch from 'node-fetch'
 import { TOOL_ARGS_PREFIX } from '../../../src/agents'
+import { handleGoogleAPIResponse } from '../shared/access-control-utils'
 
 /**
  * Adds trashed=false filter to Google Drive queries when includeTrashed is false
@@ -185,12 +186,14 @@ export async function makeGoogleDriveRequest(
         endpoint,
         method = 'GET',
         body,
-        params
+        params,
+        accessControlContext
     }: {
         endpoint: string
         method?: string
         body?: any
         params?: any
+        accessControlContext?: any
     }
 ): Promise<string> {
     const baseUrl = 'https://www.googleapis.com/drive/v3'
@@ -213,7 +216,16 @@ export async function makeGoogleDriveRequest(
 
     if (!response.ok) {
         const errorText = await response.text()
-        throw new Error(`Google Drive API Error ${response.status}: ${response.statusText} - ${errorText}`)
+        let errorResponse = null
+
+        try {
+            errorResponse = JSON.parse(errorText)
+        } catch (parseError) {
+            // Not JSON, continue with text error
+        }
+
+        const error = new Error(`Google Drive API Error ${response.status}: ${response.statusText} - ${errorText}`)
+        return await handleGoogleAPIResponse(error, response.status, params, accessControlContext, errorResponse)
     }
 
     const data = await response.text()
