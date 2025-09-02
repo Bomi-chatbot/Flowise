@@ -344,11 +344,16 @@ class GoogleSheets_Tools implements INode {
         }
 
         const defaultParams = this.transformNodeInputsToToolArgs(nodeData)
+        const accessControlContext = {
+            sessionId: options?.sessionId,
+            accessToken: accessToken
+        }
 
         const tools = createGoogleSheetsTools({
             accessToken,
             actions,
-            defaultParams
+            defaultParams,
+            accessControlContext
         })
 
         return tools
