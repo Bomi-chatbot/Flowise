@@ -901,12 +901,17 @@ class GoogleDrive_Tools implements INode {
         }
 
         const defaultParams = this.transformNodeInputsToToolArgs(nodeData)
+        const accessControlContext = {
+            sessionId: options?.sessionId,
+            accessToken: accessToken
+        }
 
         const tools = createGoogleDriveTools({
             accessToken,
             actions,
             defaultParams,
-            twilioCredentials
+            twilioCredentials,
+            accessControlContext
         })
 
         return tools
