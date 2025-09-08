@@ -73,7 +73,7 @@ const PRECISE_PERMISSION_PATTERNS = [
 const getEnvironmentConfig = (): AccessControlConfig => {
     return {
         magicLinkApiUrl: process.env.MIBO_API_URL || 'http://localhost:9001/api',
-        frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5371',
+        frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
         enableAccessControl: process.env.ACCESS_CONTROL_ENABLED !== 'false'
     }
 }
@@ -253,10 +253,14 @@ export async function generateMagicLink(
 }
 
 export function formatAccessResponse(fileId: string, mToken: string, config: AccessControlConfig = DEFAULT_CONFIG): object {
+    const encodedFileId = encodeURIComponent(fileId)
+    const encodedMToken = encodeURIComponent(mToken)
+    const accessUrl = `${config.frontendUrl}/preferences?fileId=${encodedFileId}&mToken=${encodedMToken}`
+
     return {
         fileId,
         mToken,
-        accessUrl: `${config.frontendUrl}/preferences?fileId=${encodeURIComponent(fileId)}&mToken=${encodeURIComponent(mToken)}`,
+        accessUrl,
         action: 'authorize_access',
         type: 'permission_required'
     }
