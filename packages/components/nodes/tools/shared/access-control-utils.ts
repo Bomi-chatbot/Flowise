@@ -33,7 +33,6 @@ export interface AccessControlConfig {
     magicLinkApiUrl: string
     frontendUrl: string
     enableAccessControl: boolean
-    debugMode?: boolean
 }
 
 /**
@@ -72,16 +71,10 @@ const PRECISE_PERMISSION_PATTERNS = [
  * Default configuration
  */
 const getEnvironmentConfig = (): AccessControlConfig => {
-    const isDevelopment = process.env.NODE_ENV === 'development' || process.env.VITE_DEV === 'true'
     return {
-        magicLinkApiUrl: isDevelopment
-            ? process.env.MAGIC_LINK_API_URL_DEV || 'http://localhost:3001/api/auth/magic-link'
-            : process.env.MAGIC_LINK_API_URL_PROD || 'https://api.mibo-ai.com/api/auth/magic-link',
-        frontendUrl: isDevelopment
-            ? process.env.FRONTEND_URL_DEV || 'http://localhost:3000'
-            : process.env.FRONTEND_URL_PROD || 'https://www.mibo-ai.com',
-        enableAccessControl: process.env.ACCESS_CONTROL_ENABLED !== 'false',
-        debugMode: isDevelopment || process.env.ACCESS_CONTROL_DEBUG === 'true'
+        magicLinkApiUrl: process.env.MIBO_API_URL || 'http://localhost:9001/api',
+        frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5371',
+        enableAccessControl: process.env.ACCESS_CONTROL_ENABLED !== 'false'
     }
 }
 
@@ -225,10 +218,17 @@ export async function generateMagicLink(
     config: AccessControlConfig = DEFAULT_CONFIG
 ): Promise<MagicLinkResponse> {
     try {
-        const response = await fetch(config.magicLinkApiUrl, {
+        const apiKey = process.env.MAGIC_LINK_API_KEY
+        if (!apiKey) {
+            throw new Error('Magic link API key is not configured')
+        }
+
+        console.info('Generating magic link for user')
+        const response = await fetch(`${config.magicLinkApiUrl}/auth/magic-link`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'x-internal-api-key': process.env.MAGIC_LINK_API_KEY || ''
             },
             body: JSON.stringify({
                 userId,
@@ -256,7 +256,7 @@ export function formatAccessResponse(fileId: string, mToken: string, config: Acc
     return {
         fileId,
         mToken,
-        accessUrl: `${config.frontendUrl}/preferences?fileId=${fileId}&mToken=${mToken}`,
+        accessUrl: `${config.frontendUrl}/preferences?fileId=${encodeURIComponent(fileId)}&mToken=${encodeURIComponent(mToken)}`,
         action: 'authorize_access',
         type: 'permission_required'
     }
