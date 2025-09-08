@@ -252,15 +252,32 @@ export async function generateMagicLink(
     }
 }
 
-export function formatAccessResponse(fileId: string, mToken: string, config: AccessControlConfig = DEFAULT_CONFIG): object {
-    const encodedFileId = encodeURIComponent(fileId)
-    const encodedMToken = encodeURIComponent(mToken)
-    const accessUrl = `${config.frontendUrl}/preferences?fileId=${encodedFileId}&mToken=${encodedMToken}`
+interface AccessUrl {
+    fileId: string
+    mToken: string
+    accessUrl: {
+        base: string
+        params: {
+            fileId: string
+            mToken: string
+        }
+    }
+    action: string
+    type: string
+}
 
+export function formatAccessResponse(fileId: string, mToken: string, config: AccessControlConfig = DEFAULT_CONFIG): AccessUrl {
+    const baseUrl = `${config.frontendUrl}/preferences`
     return {
         fileId,
         mToken,
-        accessUrl,
+        accessUrl: {
+            base: baseUrl,
+            params: {
+                fileId: fileId,
+                mToken: mToken
+            }
+        },
         action: 'authorize_access',
         type: 'permission_required'
     }
