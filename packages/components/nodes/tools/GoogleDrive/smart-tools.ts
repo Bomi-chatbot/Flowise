@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { DynamicStructuredTool } from '../OpenAPIToolkit/core'
-import { TOOL_ARGS_PREFIX } from '../../../src/agents'
+import { TOOL_ARGS_PREFIX, formatToolError } from '../../../src/agents'
 import {
     findFolderByName,
     clearExpiredCache,
@@ -136,7 +136,7 @@ export class SmartFolderFinderTool extends BaseSmartGoogleDriveTool {
                 return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
             }
         } catch (error) {
-            return `Error searching folders: ${error}`
+            return formatToolError(`Error searching folders: ${error}`, params)
         }
     }
 }
@@ -191,7 +191,7 @@ export class HierarchicalFolderNavigatorTool extends BaseSmartGoogleDriveTool {
                     throw new Error(`Unsupported operation: ${params.operation}`)
             }
         } catch (error) {
-            return `Error in hierarchical navigation: ${error}`
+            return formatToolError(`Error in hierarchical navigation: ${error}`, params)
         }
     }
 

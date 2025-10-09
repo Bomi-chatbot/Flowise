@@ -3,7 +3,7 @@ import fetch from 'node-fetch'
 import { randomUUID } from 'crypto'
 import sanitizeFilename from 'sanitize-filename'
 import { lookup } from 'mime-types'
-import { TOOL_ARGS_PREFIX } from '../../../src/agents'
+import { TOOL_ARGS_PREFIX, formatToolError } from '../../../src/agents'
 import { BaseSmartGoogleDriveTool } from './smart-tools'
 import { findFolderByName, resolveFolderPath, checkFileExists, createFolderIfNotExists, createFolderPath } from './google-drive-utils'
 
@@ -337,14 +337,7 @@ export class URLFileUploaderTool extends BaseSmartGoogleDriveTool {
 
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
         } catch (error) {
-            const result = {
-                success: false,
-                error: error instanceof Error ? error.message : String(error),
-                errorType: error instanceof Error ? error.constructor.name : 'UnknownError',
-                timestamp: new Date().toISOString()
-            }
-
-            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+            return formatToolError(`Error in URL file uploader: ${error instanceof Error ? error.message : String(error)}`, params)
         }
     }
 

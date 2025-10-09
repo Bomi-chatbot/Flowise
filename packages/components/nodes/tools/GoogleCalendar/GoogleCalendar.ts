@@ -277,6 +277,22 @@ class GoogleCalendar_Tools implements INode {
                 optional: true
             },
             {
+                label: 'Send Updates to',
+                name: 'sendUpdates',
+                type: 'options',
+                description: 'Send Updates to attendees',
+                options: [
+                    { label: 'All', name: 'all' },
+                    { label: 'External Only', name: 'externalOnly' },
+                    { label: 'None', name: 'none' }
+                ],
+                show: {
+                    eventActions: ['createEvent', 'updateEvent']
+                },
+                additionalParams: true,
+                optional: true
+            },
+            {
                 label: 'Recurrence Rules',
                 name: 'recurrence',
                 type: 'string',
@@ -610,6 +626,7 @@ class GoogleCalendar_Tools implements INode {
         if (nodeData.inputs?.startDate) defaultParams.startDate = nodeData.inputs.startDate
         if (nodeData.inputs?.endDate) defaultParams.endDate = nodeData.inputs.endDate
         if (nodeData.inputs?.attendees) defaultParams.attendees = nodeData.inputs.attendees
+        if (nodeData.inputs?.sendUpdates) defaultParams.sendUpdates = nodeData.inputs.sendUpdates
         if (nodeData.inputs?.recurrence) defaultParams.recurrence = nodeData.inputs.recurrence
         if (nodeData.inputs?.reminderMinutes) defaultParams.reminderMinutes = nodeData.inputs.reminderMinutes
         if (nodeData.inputs?.visibility) defaultParams.visibility = nodeData.inputs.visibility

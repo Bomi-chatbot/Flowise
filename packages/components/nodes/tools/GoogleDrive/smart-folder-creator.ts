@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { TOOL_ARGS_PREFIX } from '../../../src/agents'
+import { TOOL_ARGS_PREFIX, formatToolError } from '../../../src/agents'
 import { BaseSmartGoogleDriveTool } from './smart-tools'
 import { findFolderByName, clearExpiredCache, checkFolderExists, createFolderIfNotExists, createFolderPath } from './google-drive-utils'
 
@@ -108,14 +108,7 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
 
             return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
         } catch (error) {
-            const result = {
-                success: false,
-                error: error instanceof Error ? error.message : String(error),
-                errorType: error instanceof Error ? error.constructor.name : 'UnknownError',
-                folderName: params.folderName,
-                timestamp: new Date().toISOString()
-            }
-            return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
+            return formatToolError(`Error in smart folder creator: ${error instanceof Error ? error.message : String(error)}`, params)
         }
     }
 
