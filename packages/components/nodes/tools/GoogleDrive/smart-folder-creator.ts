@@ -90,7 +90,9 @@ export class SmartFolderCreatorTool extends BaseSmartGoogleDriveTool {
                     success: false,
                     error: 'FOLDER_CREATION_FAILED',
                     folderName: params.folderName,
-                    parentId: parentId
+                    parentId: parentId,
+                    message:
+                        'Failed to create folder. Check server logs for details. Common causes: invalid/expired access token, insufficient permissions, or API quota exceeded.'
                 }
                 return JSON.stringify(result) + TOOL_ARGS_PREFIX + JSON.stringify(params)
             }
