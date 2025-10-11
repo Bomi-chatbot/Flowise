@@ -469,7 +469,12 @@ export async function createFolderIfNotExists(accessToken: string, folderName: s
         const responseData = JSON.parse(response.split(TOOL_ARGS_PREFIX)[0])
         return responseData.id
     } catch (error) {
-        console.error('Error creating folder:', error)
+        console.error('Error creating folder:', {
+            folderName,
+            parentId,
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+        })
         return null
     }
 }
