@@ -346,9 +346,23 @@ export async function handleGoogleAPIResponse(
     originalParams: any,
     context?: any,
     errorResponse?: any,
-    config: AccessControlConfig = DEFAULT_CONFIG
+    config: AccessControlConfig = DEFAULT_CONFIG,
+    skipMagicLink: boolean = false
 ): Promise<string> {
     if (isPermissionError(error, statusCode, errorResponse)) {
+        if (skipMagicLink) {
+            const fileId = extractFileIdFromError(error, originalParams)
+            return JSON.stringify({
+                message: `Oops 😅, Mibo can only edit spreadsheets created from here. This Google Sheet wasn't created with Mibo, so I can't modify it. 👉 But if you ask me, I can create a new spreadsheet for you and we can continue from there.`,
+                canAccess: false,
+                reason: 'spreadsheet_not_created_by_mibo',
+                statusCode,
+                fileId: fileId || 'unknown',
+                suggestion: 'Ask me to create a new spreadsheet and I will help you with that.',
+                alternativeAction: 'create_new_spreadsheet'
+            })
+        }
+
         return await handleAccessControlResponse(
             {
                 error,

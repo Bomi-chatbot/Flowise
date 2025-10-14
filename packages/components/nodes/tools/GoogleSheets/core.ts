@@ -174,7 +174,7 @@ class BaseGoogleSheetsTool extends DynamicStructuredTool {
 
             const error = new Error(`Google Sheets API Error ${response.status}: ${response.statusText} - ${errorText}`)
 
-            return await handleGoogleAPIResponse(error, response.status, params, this.accessControlContext, errorResponse)
+            return await handleGoogleAPIResponse(error, response.status, params, this.accessControlContext, errorResponse, undefined, true)
         }
 
         const data = await response.text()
