@@ -1714,7 +1714,12 @@ class Agent_Agentflow implements INode {
         const sseStreamer: IServerSideEventStreamer = options.sseStreamer as IServerSideEventStreamer
 
         if (response.tool_calls) {
-            sseStreamer.streamCalledToolsEvent(chatId, response.tool_calls)
+            const formattedToolCalls = response.tool_calls.map((toolCall: any) => ({
+                tool: toolCall.name || 'tool',
+                toolInput: toolCall.args,
+                toolOutput: ''
+            }))
+            sseStreamer.streamCalledToolsEvent(chatId, flatten(formattedToolCalls))
         }
 
         if (response.usage_metadata) {
@@ -1776,7 +1781,12 @@ class Agent_Agentflow implements INode {
 
         // Stream tool calls if available
         if (sseStreamer) {
-            sseStreamer.streamCalledToolsEvent(chatId, JSON.stringify(response.tool_calls))
+            const formattedToolCalls = response.tool_calls.map((toolCall: any) => ({
+                tool: toolCall.name || 'tool',
+                toolInput: toolCall.args,
+                toolOutput: ''
+            }))
+            sseStreamer.streamCalledToolsEvent(chatId, flatten(formattedToolCalls))
         }
 
         // Remove tool calls with no id
@@ -2098,7 +2108,12 @@ class Agent_Agentflow implements INode {
 
         // Stream tool calls if available
         if (sseStreamer) {
-            sseStreamer.streamCalledToolsEvent(chatId, JSON.stringify(response.tool_calls))
+            const formattedToolCalls = response.tool_calls.map((toolCall: any) => ({
+                tool: toolCall.name || 'tool',
+                toolInput: toolCall.args,
+                toolOutput: ''
+            }))
+            sseStreamer.streamCalledToolsEvent(chatId, flatten(formattedToolCalls))
         }
 
         // Remove tool calls with no id
