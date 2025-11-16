@@ -4,11 +4,11 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { JSDOM } from 'jsdom'
 import { z } from 'zod'
+import { cloneDeep, omit, get } from 'lodash'
 import TurndownService from 'turndown'
 import { DataSource, Equal } from 'typeorm'
 import { ICommonObject, IDatabaseEntity, IFileUpload, IMessage, INodeData, IVariable, MessageContentImageUrl } from './Interface'
 import { AES, enc } from 'crypto-js'
-import { omit, get } from 'lodash'
 import { AIMessage, HumanMessage, BaseMessage } from '@langchain/core/messages'
 import { Document } from '@langchain/core/documents'
 import { getFileFromStorage } from './storageUtils'
@@ -1500,9 +1500,29 @@ export const executeJavaScriptCode = async (
 
             const sbx = await Sandbox.create({ apiKey: process.env.E2B_APIKEY, timeoutMs })
 
+            // Determine which libraries to install
+            const librariesToInstall = new Set<string>(libraries)
+
+            // Auto-detect required libraries from code
+            // Extract required modules from import/require statements
+            const importRegex = /(?:import\s+.*?\s+from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))/g
+            let match
+            while ((match = importRegex.exec(code)) !== null) {
+                const moduleName = match[1] || match[2]
+                // Extract base module name (e.g., 'typeorm' from 'typeorm/something')
+                const baseModuleName = moduleName.split('/')[0]
+                librariesToInstall.add(baseModuleName)
+            }
+
             // Install libraries
-            for (const library of libraries) {
-                await sbx.commands.run(`npm install ${library}`)
+            for (const library of librariesToInstall) {
+                // Validate library name to prevent command injection.
+                const validPackageNameRegex = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/
+                if (validPackageNameRegex.test(library)) {
+                    await sbx.commands.run(`npm install ${library}`)
+                } else {
+                    console.warn(`[Sandbox] Skipping installation of invalid module: ${library}`)
+                }
             }
 
             // Separate imports from the rest of the code for proper ES6 module structure
@@ -1758,5 +1778,166 @@ export const parseJsonBody = (body: string): any => {
                 }
             }
         }
+    }
+}
+
+/**
+ * Parse a value against a Zod schema with automatic type conversion for common type mismatches
+ * @param schema - The Zod schema to parse against
+ * @param arg - The value to parse
+ * @param maxDepth - Maximum recursion depth to prevent infinite loops (default: 10)
+ * @returns The parsed value
+ * @throws Error if parsing fails after attempting type conversions
+ */
+export async function parseWithTypeConversion<T extends z.ZodTypeAny>(schema: T, arg: unknown, maxDepth: number = 10): Promise<z.infer<T>> {
+    // Safety check: prevent infinite recursion
+    if (maxDepth <= 0) {
+        throw new Error('Maximum recursion depth reached in parseWithTypeConversion')
+    }
+
+    try {
+        return await schema.parseAsync(arg)
+    } catch (e) {
+        // Check if it's a ZodError and try to fix type mismatches
+        if (z.ZodError && e instanceof z.ZodError) {
+            const zodError = e as z.ZodError
+            // Deep clone the arg to avoid mutating the original
+            const modifiedArg = typeof arg === 'object' && arg !== null ? cloneDeep(arg) : arg
+            let hasModification = false
+
+            // Helper function to set a value at a nested path
+            const setValueAtPath = (obj: any, path: (string | number)[], value: any): void => {
+                let current = obj
+                for (let i = 0; i < path.length - 1; i++) {
+                    const key = path[i]
+                    if (current && typeof current === 'object' && key in current) {
+                        current = current[key]
+                    } else {
+                        return // Path doesn't exist
+                    }
+                }
+                if (current !== undefined && current !== null) {
+                    const finalKey = path[path.length - 1]
+                    current[finalKey] = value
+                }
+            }
+
+            // Helper function to get a value at a nested path
+            const getValueAtPath = (obj: any, path: (string | number)[]): any => {
+                let current = obj
+                for (const key of path) {
+                    if (current && typeof current === 'object' && key in current) {
+                        current = current[key]
+                    } else {
+                        return undefined
+                    }
+                }
+                return current
+            }
+
+            // Helper function to convert value to expected type
+            const convertValue = (value: any, expected: string, received: string): any => {
+                // Expected string
+                if (expected === 'string') {
+                    if (received === 'object' || received === 'array') {
+                        return JSON.stringify(value)
+                    }
+                    if (received === 'number' || received === 'boolean') {
+                        return String(value)
+                    }
+                }
+                // Expected number
+                else if (expected === 'number') {
+                    if (received === 'string') {
+                        const parsed = parseFloat(value)
+                        if (!isNaN(parsed)) {
+                            return parsed
+                        }
+                    }
+                    if (received === 'boolean') {
+                        return value ? 1 : 0
+                    }
+                }
+                // Expected boolean
+                else if (expected === 'boolean') {
+                    if (received === 'string') {
+                        const lower = String(value).toLowerCase().trim()
+                        if (lower === 'true' || lower === '1' || lower === 'yes') {
+                            return true
+                        }
+                        if (lower === 'false' || lower === '0' || lower === 'no') {
+                            return false
+                        }
+                    }
+                    if (received === 'number') {
+                        return value !== 0
+                    }
+                }
+                // Expected object
+                else if (expected === 'object') {
+                    if (received === 'string') {
+                        try {
+                            const parsed = JSON.parse(value)
+                            if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+                                return parsed
+                            }
+                        } catch {
+                            // Invalid JSON, return undefined to skip conversion
+                        }
+                    }
+                }
+                // Expected array
+                else if (expected === 'array') {
+                    if (received === 'string') {
+                        try {
+                            const parsed = JSON.parse(value)
+                            if (Array.isArray(parsed)) {
+                                return parsed
+                            }
+                        } catch {
+                            // Invalid JSON, return undefined to skip conversion
+                        }
+                    }
+                    if (received === 'object' && value !== null) {
+                        // Convert object to array (e.g., {0: 'a', 1: 'b'} -> ['a', 'b'])
+                        // Only if it looks like an array-like object
+                        const keys = Object.keys(value)
+                        const numericKeys = keys.filter((k) => /^\d+$/.test(k))
+                        if (numericKeys.length === keys.length) {
+                            return numericKeys.map((k) => value[k])
+                        }
+                    }
+                }
+                return undefined // No conversion possible
+            }
+
+            // Process each issue in the error
+            for (const issue of zodError.issues) {
+                // Handle invalid_type errors (type mismatches)
+                if (issue.code === 'invalid_type' && issue.path.length > 0) {
+                    try {
+                        const valueAtPath = getValueAtPath(modifiedArg, issue.path)
+                        if (valueAtPath !== undefined) {
+                            const convertedValue = convertValue(valueAtPath, issue.expected, issue.received)
+                            if (convertedValue !== undefined) {
+                                setValueAtPath(modifiedArg, issue.path, convertedValue)
+                                hasModification = true
+                            }
+                        }
+                    } catch (pathError) {
+                        console.error('Error processing path in Zod error', pathError)
+                    }
+                }
+            }
+
+            // If we modified the arg, recursively call parseWithTypeConversion
+            // This allows newly surfaced nested errors to also get conversion treatment
+            // Decrement maxDepth to prevent infinite recursion
+            if (hasModification) {
+                return await parseWithTypeConversion(schema, modifiedArg, maxDepth - 1)
+            }
+        }
+        // Re-throw the original error if not a ZodError or no conversion possible
+        throw e
     }
 }

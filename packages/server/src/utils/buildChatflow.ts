@@ -969,7 +969,7 @@ const checkIfStreamValid = async (
 }
 
 /**
- * Build/Data Preperation for execute function
+ * Build/Data Preparation for execute function
  * @param {Request} req
  * @param {boolean} isInternal
  */
